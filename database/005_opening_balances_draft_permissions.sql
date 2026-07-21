@@ -52,16 +52,16 @@ BEGIN
 END;
 $$;
 
+/* =========================================================
+   Optional transaction-currency fields for GL/opening balances.
+   IMPORTANT: remove entry triggers before the one-time backfill,
+   otherwise existing POSTED entries are deliberately immutable and
+   the migration cannot populate the new currency columns.
+   ========================================================= */
 DROP TRIGGER IF EXISTS trg_prevent_posted_entry_change ON erp.journal_entries;
 DROP TRIGGER IF EXISTS trg_prevent_non_draft_entry_change ON erp.journal_entries;
-CREATE TRIGGER trg_prevent_non_draft_entry_change
-BEFORE INSERT OR UPDATE OR DELETE ON erp.journal_entries
-FOR EACH ROW EXECUTE FUNCTION erp.prevent_non_draft_entry_change();
+DROP TRIGGER IF EXISTS trg_validate_intercompany_entry ON erp.journal_entries;
 
-/* =========================================================
-   Optional transaction-currency fields for GL/opening balances
-   Base debit/credit remain the statutory EGP ledger values.
-   ========================================================= */
 ALTER TABLE erp.journal_entries
     ADD COLUMN IF NOT EXISTS currency CHAR(3),
     ADD COLUMN IF NOT EXISTS exchange_rate NUMERIC(20,10) NOT NULL DEFAULT 1 CHECK (exchange_rate > 0),
@@ -72,10 +72,21 @@ UPDATE erp.journal_entries
 SET currency = COALESCE(currency, 'EGP'),
     foreign_debit = CASE WHEN foreign_debit = 0 THEN debit_amount ELSE foreign_debit END,
     foreign_credit = CASE WHEN foreign_credit = 0 THEN credit_amount ELSE foreign_credit END
-WHERE currency IS NULL OR (foreign_debit = 0 AND debit_amount <> 0) OR (foreign_credit = 0 AND credit_amount <> 0);
+WHERE currency IS NULL
+   OR (foreign_debit = 0 AND debit_amount <> 0)
+   OR (foreign_credit = 0 AND credit_amount <> 0);
 
 ALTER TABLE erp.journal_entries
     ALTER COLUMN currency SET DEFAULT 'EGP';
+
+/* Restore validation and immutability after the data backfill. */
+CREATE TRIGGER trg_validate_intercompany_entry
+BEFORE INSERT OR UPDATE ON erp.journal_entries
+FOR EACH ROW EXECUTE FUNCTION erp.validate_intercompany_entry();
+
+CREATE TRIGGER trg_prevent_non_draft_entry_change
+BEFORE INSERT OR UPDATE OR DELETE ON erp.journal_entries
+FOR EACH ROW EXECUTE FUNCTION erp.prevent_non_draft_entry_change();
 
 /* =========================================================
    Opening balance batches. Financial lines live in the linked

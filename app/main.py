@@ -524,7 +524,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Cairo Group Holding ERP",
-    version="0.5.0",
+    version="0.5.1",
     description="Multi-company cloud accounting with opening balances, draft voucher workflow, permissions, currencies and print-ready documents",
     lifespan=lifespan,
 )
@@ -808,7 +808,7 @@ def home() -> FileResponse:
 def health() -> dict[str, str]:
     with pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok", "version": "0.5.0"}
+    return {"status": "ok", "version": "0.5.1"}
 
 
 @app.post("/api/auth/login")
