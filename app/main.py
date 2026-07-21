@@ -16,6 +16,7 @@ from uuid import UUID
 import jwt
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -27,6 +28,23 @@ AUTO_MIGRATE = os.environ.get("AUTO_MIGRATE", "true").lower() == "true"
 SYNC_ADMIN_CREDENTIALS = os.environ.get("SYNC_ADMIN_CREDENTIALS", "true").lower() == "true"
 ALGORITHM = "HS256"
 MONEY = Decimal("0.0001")
+
+ALL_PERMISSIONS = {
+    "ACCOUNT_MANAGE", "CURRENCY_MANAGE", "VOUCHER_CREATE", "VOUCHER_EDIT",
+    "VOUCHER_DELETE", "VOUCHER_POST", "OPENING_BALANCE_CREATE", "REPORT_VIEW",
+    "PARTY_MANAGE", "BANK_MANAGE", "ASSET_MANAGE", "USER_MANAGE",
+}
+ROLE_PERMISSIONS: dict[str, set[str]] = {
+    "GROUP_ADMIN": set(ALL_PERMISSIONS),
+    "FINANCE_MANAGER": set(ALL_PERMISSIONS) - {"USER_MANAGE"},
+    "ACCOUNTANT": {
+        "VOUCHER_CREATE", "VOUCHER_EDIT", "VOUCHER_DELETE",
+        "OPENING_BALANCE_CREATE", "REPORT_VIEW", "PARTY_MANAGE",
+        "BANK_MANAGE", "ASSET_MANAGE",
+    },
+    "REVIEWER": {"VOUCHER_POST", "REPORT_VIEW"},
+    "VIEWER": {"REPORT_VIEW"},
+}
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is required")
@@ -44,6 +62,67 @@ pool = ConnectionPool(
 
 def money(value: Decimal | float | int | str) -> Decimal:
     return Decimal(str(value)).quantize(MONEY, rounding=ROUND_HALF_UP)
+
+
+def get_base_currency(conn: Connection, group_id: UUID) -> str:
+    row = conn.execute(
+        "SELECT presentation_currency FROM erp.corporate_groups WHERE group_id=%s",
+        (group_id,),
+    ).fetchone()
+    return str(row["presentation_currency"] if row else "EGP").upper()
+
+
+def resolve_exchange_rate_db(
+    conn: Connection,
+    *,
+    group_id: UUID,
+    company_id: UUID | None,
+    currency_code: str,
+    rate_date: date,
+    rate_type: str = "SPOT",
+) -> tuple[Decimal, str]:
+    currency = currency_code.upper()
+    base = get_base_currency(conn, group_id)
+    if currency == base:
+        return Decimal("1"), "BASE"
+    row = conn.execute(
+        """
+        SELECT rate, rate_date, rate_type, source
+        FROM erp.exchange_rates
+        WHERE group_id=%s
+          AND from_currency=%s
+          AND to_currency=%s
+          AND rate_type=%s
+          AND rate_date<=%s
+          AND (company_id=%s OR company_id IS NULL)
+        ORDER BY (company_id IS NOT NULL) DESC, rate_date DESC
+        LIMIT 1
+        """,
+        (group_id, currency, base, rate_type, rate_date, company_id),
+    ).fetchone()
+    if not row and rate_type != "SPOT":
+        row = conn.execute(
+            """
+            SELECT rate, rate_date, rate_type, source
+            FROM erp.exchange_rates
+            WHERE group_id=%s
+              AND from_currency=%s
+              AND to_currency=%s
+              AND rate_type='SPOT'
+              AND rate_date<=%s
+              AND (company_id=%s OR company_id IS NULL)
+            ORDER BY (company_id IS NOT NULL) DESC, rate_date DESC
+            LIMIT 1
+            """,
+            (group_id, currency, base, rate_date, company_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(
+            status_code=422,
+            detail=f"لا يوجد سعر صرف للعملة {currency} حتى تاريخ {rate_date}. أضف السعر من شاشة العملات.",
+        )
+    source = f"{row['rate_type']} {row['rate_date']}" + (f" / {row['source']}" if row.get('source') else "")
+    return Decimal(str(row["rate"])), source
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
@@ -73,6 +152,7 @@ def create_token(user: dict[str, Any]) -> str:
         "company_id": str(user["company_id"]) if user.get("company_id") else None,
         "is_group_admin": bool(user.get("is_group_admin")),
         "role_code": user.get("role_code", "GROUP_ADMIN"),
+        "permissions": sorted(set(user.get("permissions") or [])),
         "email": user["email"],
         "iat": now,
         "exp": now + timedelta(hours=12),
@@ -124,6 +204,51 @@ def ensure_open_period(conn: Connection, company_id: UUID, posting_date: date) -
     conn.execute("SELECT erp.ensure_open_period(%s,%s)", (company_id, posting_date))
 
 
+def _insert_voucher_entries(
+    conn: Connection,
+    *,
+    user: dict[str, Any],
+    company_id: UUID,
+    voucher_id: UUID,
+    entries: list[dict[str, Any]],
+) -> None:
+    if not entries:
+        raise HTTPException(status_code=422, detail="أضف سطراً واحداً على الأقل للقيد")
+    for line_no, entry in enumerate(entries, 1):
+        debit_amount = money(entry.get("debit_amount", 0))
+        credit_amount = money(entry.get("credit_amount", 0))
+        if (debit_amount > 0) == (credit_amount > 0):
+            raise HTTPException(status_code=422, detail="كل سطر يجب أن يكون مديناً أو دائناً فقط")
+        account = ensure_account(conn, user["group_id"], company_id, UUID(str(entry["account_id"])))
+        counterparty = entry.get("counterparty_company_id")
+        ic_ref = entry.get("intercompany_reference")
+        if account["is_intercompany"] and not counterparty:
+            raise HTTPException(status_code=422, detail="الشركة المقابلة مطلوبة لحساب Intercompany")
+        if account["is_intercompany"] and not ic_ref:
+            raise HTTPException(status_code=422, detail="مرجع المعاملة المتبادلة مطلوب")
+        currency = str(entry.get("currency") or "EGP").upper()
+        exchange_rate = Decimal(str(entry.get("exchange_rate") or 1))
+        foreign_debit = money(entry.get("foreign_debit") if entry.get("foreign_debit") is not None else debit_amount)
+        foreign_credit = money(entry.get("foreign_credit") if entry.get("foreign_credit") is not None else credit_amount)
+        conn.execute(
+            """
+            INSERT INTO erp.journal_entries
+                (voucher_id, group_id, company_id, account_id, line_no,
+                 entry_description, debit_amount, credit_amount,
+                 counterparty_company_id, intercompany_reference,
+                 branch_id, cost_center_id, currency, exchange_rate,
+                 foreign_debit, foreign_credit)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """,
+            (
+                voucher_id, user["group_id"], company_id, entry["account_id"], line_no,
+                entry.get("description"), debit_amount, credit_amount, counterparty, ic_ref,
+                entry.get("branch_id"), entry.get("cost_center_id"), currency, exchange_rate,
+                foreign_debit, foreign_credit,
+            ),
+        )
+
+
 def create_voucher_db(
     conn: Connection,
     *,
@@ -137,58 +262,32 @@ def create_voucher_db(
     source_module: str = "GL",
     external_reference: str | None = None,
     post_immediately: bool = True,
+    voucher_type: str = "GENERAL",
 ) -> dict[str, Any]:
-    ensure_open_period(conn, company_id, posting_date)
     debit = money(sum(money(e.get("debit_amount", 0)) for e in entries))
     credit = money(sum(money(e.get("credit_amount", 0)) for e in entries))
-    if debit <= 0 or debit != credit:
-        raise HTTPException(status_code=422, detail=f"القيد غير متوازن: مدين {debit} / دائن {credit}")
-    if len(entries) < 2:
-        raise HTTPException(status_code=422, detail="القيد يحتاج سطرين على الأقل")
+    if post_immediately:
+        ensure_open_period(conn, company_id, posting_date)
+        if len(entries) < 2 or debit <= 0 or debit != credit:
+            raise HTTPException(status_code=422, detail=f"لا يمكن ترحيل قيد غير متوازن: مدين {debit} / دائن {credit}")
 
     voucher = conn.execute(
         """
         INSERT INTO erp.journal_vouchers
             (group_id, company_id, voucher_no, voucher_type, status,
              document_date, posting_date, description, source_module,
-             external_reference, created_by)
-        VALUES (%s,%s,%s,'GENERAL','DRAFT',%s,%s,%s,%s,%s,%s)
-        RETURNING voucher_id, voucher_no, status, posting_date
+             external_reference, created_by, updated_by)
+        VALUES (%s,%s,%s,%s,'DRAFT',%s,%s,%s,%s,%s,%s,%s)
+        RETURNING voucher_id, voucher_no, voucher_type, status, posting_date
         """,
         (
-            user["group_id"], company_id, voucher_no, document_date, posting_date,
-            description, source_module, external_reference, user["user_id"],
+            user["group_id"], company_id, voucher_no, voucher_type, document_date, posting_date,
+            description, source_module, external_reference, user["user_id"], user["user_id"],
         ),
     ).fetchone()
-
-    for line_no, entry in enumerate(entries, 1):
-        debit_amount = money(entry.get("debit_amount", 0))
-        credit_amount = money(entry.get("credit_amount", 0))
-        if (debit_amount > 0) == (credit_amount > 0):
-            raise HTTPException(status_code=422, detail="كل سطر يجب أن يكون مديناً أو دائناً فقط")
-        account = ensure_account(conn, user["group_id"], company_id, UUID(str(entry["account_id"])))
-        counterparty = entry.get("counterparty_company_id")
-        ic_ref = entry.get("intercompany_reference")
-        if account["is_intercompany"] and not counterparty:
-            raise HTTPException(status_code=422, detail="الشركة المقابلة مطلوبة لحساب Intercompany")
-        if account["is_intercompany"] and not ic_ref:
-            raise HTTPException(status_code=422, detail="مرجع المعاملة المتبادلة مطلوب")
-        conn.execute(
-            """
-            INSERT INTO erp.journal_entries
-                (voucher_id, group_id, company_id, account_id, line_no,
-                 entry_description, debit_amount, credit_amount,
-                 counterparty_company_id, intercompany_reference,
-                 branch_id, cost_center_id)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                voucher["voucher_id"], user["group_id"], company_id,
-                entry["account_id"], line_no, entry.get("description"),
-                debit_amount, credit_amount, counterparty, ic_ref,
-                entry.get("branch_id"), entry.get("cost_center_id"),
-            ),
-        )
+    _insert_voucher_entries(
+        conn, user=user, company_id=company_id, voucher_id=voucher["voucher_id"], entries=entries
+    )
     if post_immediately:
         conn.execute("SELECT erp.post_voucher(%s,%s)", (voucher["voucher_id"], user["user_id"]))
         voucher["status"] = "POSTED"
@@ -224,6 +323,7 @@ def seed_default_chart(conn: Connection, group_id: UUID) -> None:
         ("411000", "إيرادات الفنادق", "REVENUE", "CREDIT", "400000", True, False, "NONE"),
         ("412000", "إيرادات التطوير", "REVENUE", "CREDIT", "400000", True, False, "NONE"),
         ("413000", "إيرادات الإدارة والخدمات", "REVENUE", "CREDIT", "400000", True, False, "NONE"),
+        ("414000", "أرباح فروق العملة", "REVENUE", "CREDIT", "400000", True, False, "NONE"),
         ("419000", "إيرادات بين شركات المجموعة", "REVENUE", "CREDIT", "400000", True, True, "IC_REVENUE"),
         ("500000", "المصروفات", "EXPENSE", "DEBIT", None, False, False, "NONE"),
         ("511000", "تكلفة التشغيل", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
@@ -235,6 +335,7 @@ def seed_default_chart(conn: Connection, group_id: UUID) -> None:
         ("517000", "مصروفات بنكية", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
         ("518000", "مصروفات عمومية وإدارية", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
         ("519000", "مصروفات بين شركات المجموعة", "EXPENSE", "DEBIT", "500000", True, True, "IC_EXPENSE"),
+        ("520000", "خسائر فروق العملة", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
     ]
     ids: dict[str, UUID] = {}
     for code, name, cls, normal, _parent, postable, inter, role in chart:
@@ -423,10 +524,12 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Cairo Group Holding ERP",
-    version="0.3.2",
-    description="Multi-company cloud accounting: GL, AR, AP, banks and fixed assets",
+    version="0.5.0",
+    description="Multi-company cloud accounting with opening balances, draft voucher workflow, permissions, currencies and print-ready documents",
     lifespan=lifespan,
 )
+
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 
 
 @app.exception_handler(Exception)
@@ -479,6 +582,10 @@ class VoucherEntryCreate(BaseModel):
     description: str | None = None
     debit_amount: Decimal = Field(default=0, ge=0)
     credit_amount: Decimal = Field(default=0, ge=0)
+    currency: str = Field(default="EGP", min_length=3, max_length=3)
+    exchange_rate: Decimal = Field(default=1, gt=0)
+    foreign_debit: Decimal | None = Field(default=None, ge=0)
+    foreign_credit: Decimal | None = Field(default=None, ge=0)
     counterparty_company_id: UUID | None = None
     intercompany_reference: str | None = None
     branch_id: UUID | None = None
@@ -491,8 +598,25 @@ class VoucherCreate(BaseModel):
     document_date: date
     posting_date: date
     description: str | None = None
-    entries: list[VoucherEntryCreate] = Field(min_length=2)
+    entries: list[VoucherEntryCreate] = Field(min_length=1)
     post_immediately: bool = True
+
+
+class VoucherUpdate(BaseModel):
+    voucher_no: str = Field(min_length=1, max_length=50)
+    document_date: date
+    posting_date: date
+    description: str | None = None
+    entries: list[VoucherEntryCreate] = Field(min_length=1)
+
+
+class OpeningBalanceCreate(BaseModel):
+    company_id: UUID
+    batch_no: str = Field(min_length=1, max_length=50)
+    opening_date: date
+    description: str | None = None
+    entries: list[VoucherEntryCreate] = Field(min_length=1)
+    post_immediately: bool = False
 
 
 class FiscalYearCreate(BaseModel):
@@ -534,6 +658,7 @@ class BankAccountCreate(BaseModel):
     currency: str = Field(default="EGP", min_length=3, max_length=3)
     gl_account_id: UUID
     opening_balance: Decimal = Decimal("0")
+    opening_exchange_rate: Decimal | None = Field(default=None, gt=0)
 
 
 class InvoiceLineCreate(BaseModel):
@@ -553,7 +678,7 @@ class InvoiceCreate(BaseModel):
     invoice_date: date
     due_date: date
     currency: str = Field(default="EGP", min_length=3, max_length=3)
-    exchange_rate: Decimal = Field(default=1, gt=0)
+    exchange_rate: Decimal | None = Field(default=None, gt=0)
     description: str | None = None
     control_account_id: UUID | None = None
     tax_account_id: UUID | None = None
@@ -570,8 +695,34 @@ class CashTransactionCreate(BaseModel):
     party_id: UUID | None = None
     offset_account_id: UUID | None = None
     amount: Decimal = Field(gt=0)
+    exchange_rate: Decimal | None = Field(default=None, gt=0)
     description: str | None = None
     reference_no: str | None = None
+
+
+class CurrencyCreate(BaseModel):
+    currency_code: str = Field(min_length=3, max_length=3)
+    currency_name_ar: str = Field(min_length=1, max_length=100)
+    currency_name_en: str | None = Field(default=None, max_length=100)
+    symbol: str | None = Field(default=None, max_length=10)
+    decimal_places: int = Field(default=2, ge=0, le=6)
+
+
+class ExchangeRateCreate(BaseModel):
+    company_id: UUID | None = None
+    rate_date: date
+    from_currency: str = Field(min_length=3, max_length=3)
+    rate_type: Literal["SPOT", "AVERAGE", "CLOSING"] = "SPOT"
+    rate: Decimal = Field(gt=0)
+    source: str | None = Field(default=None, max_length=100)
+    notes: str | None = None
+
+
+class BankRevaluationCreate(BaseModel):
+    company_id: UUID
+    revaluation_date: date
+    gain_account_id: UUID
+    loss_account_id: UUID
 
 
 class AssetCategoryCreate(BaseModel):
@@ -609,6 +760,7 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=12)
     role_code: Literal["FINANCE_MANAGER", "ACCOUNTANT", "REVIEWER", "VIEWER"]
     company_id: UUID | None = None
+    permissions: list[str] = Field(default_factory=list)
 
 
 def get_current_user(authorization: Annotated[str | None, Header()] = None) -> dict[str, Any]:
@@ -629,6 +781,19 @@ def require_group_admin(user: dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="صلاحية مدير المجموعة مطلوبة")
 
 
+def effective_permissions(user: dict[str, Any]) -> set[str]:
+    if user.get("is_group_admin"):
+        return set(ALL_PERMISSIONS)
+    role = str(user.get("role_code") or "VIEWER")
+    explicit = set(user.get("permissions") or [])
+    return set(ROLE_PERMISSIONS.get(role, set())) | explicit
+
+
+def require_permission(user: dict[str, Any], permission: str) -> None:
+    if permission not in effective_permissions(user):
+        raise HTTPException(status_code=403, detail=f"لا توجد صلاحية: {permission}")
+
+
 def ensure_company_access(user: dict[str, Any], company_id: UUID) -> None:
     if not user["is_group_admin"] and user["company_id"] != company_id:
         raise HTTPException(status_code=403, detail="لا توجد صلاحية على هذه الشركة")
@@ -643,7 +808,7 @@ def home() -> FileResponse:
 def health() -> dict[str, str]:
     with pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok", "version": "0.3.2"}
+    return {"status": "ok", "version": "0.5.0"}
 
 
 @app.post("/api/auth/login")
@@ -652,7 +817,7 @@ def login(data: LoginRequest) -> dict[str, Any]:
         user = conn.execute(
             """
             SELECT user_id, group_id, company_id, email, password_hash,
-                   is_group_admin, role_code, full_name
+                   is_group_admin, role_code, full_name, permissions
             FROM erp.app_users
             WHERE LOWER(email)=LOWER(%s) AND is_active=TRUE
             """,
@@ -672,6 +837,7 @@ def me(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, 
         "group_id": str(user["group_id"]),
         "company_id": str(user["company_id"]) if user["company_id"] else None,
         "is_group_admin": user["is_group_admin"], "role_code": user.get("role_code"),
+        "permissions": sorted(effective_permissions(user)),
     }
 
 
@@ -696,8 +862,8 @@ def dashboard(user: Annotated[dict[str, Any], Depends(get_current_user)], compan
                 SELECT
                   (SELECT COUNT(*) FROM erp.parties WHERE group_id=%s AND company_id=%s AND is_active) AS parties,
                   (SELECT COUNT(*) FROM erp.invoices WHERE group_id=%s AND company_id=%s AND status='POSTED') AS invoices,
-                  (SELECT COALESCE(SUM(total_amount),0) FROM erp.invoices WHERE group_id=%s AND company_id=%s AND invoice_type='SALES' AND status IN ('POSTED','PAID')) AS sales,
-                  (SELECT COALESCE(SUM(total_amount),0) FROM erp.invoices WHERE group_id=%s AND company_id=%s AND invoice_type='PURCHASE' AND status IN ('POSTED','PAID')) AS purchases,
+                  (SELECT COALESCE(SUM(base_total_amount),0) FROM erp.invoices WHERE group_id=%s AND company_id=%s AND invoice_type='SALES' AND status IN ('POSTED','PAID')) AS sales,
+                  (SELECT COALESCE(SUM(base_total_amount),0) FROM erp.invoices WHERE group_id=%s AND company_id=%s AND invoice_type='PURCHASE' AND status IN ('POSTED','PAID')) AS purchases,
                   (SELECT COUNT(*) FROM erp.fixed_assets WHERE group_id=%s AND company_id=%s AND status='ACTIVE') AS assets,
                   (SELECT COALESCE(SUM(opening_balance),0) FROM erp.bank_accounts WHERE group_id=%s AND company_id=%s AND is_active) AS bank_opening
                 """,
@@ -752,20 +918,61 @@ def create_company(data: CompanyCreate, user: Annotated[dict[str, Any], Depends(
 def list_group_accounts(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> list[dict[str, Any]]:
     with pool.connection() as conn:
         return conn.execute(
-            """SELECT group_account_id, account_code, account_name, account_class,
-                      normal_balance, parent_group_account_id, is_postable,
-                      is_intercompany, intercompany_role
-               FROM erp.group_accounts WHERE group_id=%s AND is_active=TRUE ORDER BY account_code""",
-            (user["group_id"],),
+            """
+            WITH RECURSIVE tree AS (
+                SELECT ga.group_account_id, ga.account_code, ga.account_name, ga.account_class,
+                       ga.normal_balance, ga.parent_group_account_id, ga.is_postable,
+                       ga.is_intercompany, ga.intercompany_role, ga.notes,
+                       0 AS account_level, ga.account_code::TEXT AS sort_path,
+                       NULL::VARCHAR AS parent_account_code, NULL::VARCHAR AS parent_account_name
+                FROM erp.group_accounts ga
+                WHERE ga.group_id=%s AND ga.is_active=TRUE AND ga.parent_group_account_id IS NULL
+                UNION ALL
+                SELECT child.group_account_id, child.account_code, child.account_name, child.account_class,
+                       child.normal_balance, child.parent_group_account_id, child.is_postable,
+                       child.is_intercompany, child.intercompany_role, child.notes,
+                       parent.account_level + 1, parent.sort_path || '.' || child.account_code,
+                       parent.account_code, parent.account_name
+                FROM erp.group_accounts child
+                JOIN tree parent ON parent.group_account_id=child.parent_group_account_id
+                WHERE child.group_id=%s AND child.is_active=TRUE
+            )
+            SELECT * FROM tree ORDER BY sort_path
+            """,
+            (user["group_id"], user["group_id"]),
         ).fetchall()
 
 
 @app.post("/api/group-accounts", status_code=201)
 def create_group_account(data: GroupAccountCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
-    require_group_admin(user)
+    require_permission(user, "ACCOUNT_MANAGE")
     if data.is_intercompany and data.intercompany_role == "NONE":
         raise HTTPException(status_code=422, detail="حدد نوع حساب Intercompany")
+    if not data.is_postable and data.is_intercompany:
+        raise HTTPException(status_code=422, detail="الحساب الرئيسي لا يمكن أن يكون حساب حركة Intercompany")
     with pool.connection() as conn:
+        if data.parent_group_account_id:
+            parent = conn.execute(
+                """SELECT group_account_id, account_code, account_name, account_class, is_postable
+                   FROM erp.group_accounts
+                   WHERE group_id=%s AND group_account_id=%s AND is_active=TRUE""",
+                (user["group_id"], data.parent_group_account_id),
+            ).fetchone()
+            if not parent:
+                raise HTTPException(status_code=422, detail="الحساب الرئيسي المختار غير موجود")
+            if parent["account_class"] != data.account_class:
+                raise HTTPException(status_code=422, detail="الحساب الفرعي يجب أن يكون من نفس تصنيف الحساب الرئيسي")
+            if parent["is_postable"]:
+                mapped = conn.execute(
+                    "SELECT COUNT(*) AS n FROM erp.accounts WHERE group_id=%s AND group_account_id=%s AND is_active=TRUE",
+                    (user["group_id"], data.parent_group_account_id),
+                ).fetchone()["n"]
+                if mapped:
+                    raise HTTPException(status_code=422, detail="الحساب المختار حساب حركة ومستخدم في الشركات؛ أنشئ حساباً رئيسياً جديداً أولاً")
+                conn.execute(
+                    "UPDATE erp.group_accounts SET is_postable=FALSE WHERE group_id=%s AND group_account_id=%s",
+                    (user["group_id"], data.parent_group_account_id),
+                )
         row = conn.execute(
             """
             INSERT INTO erp.group_accounts
@@ -777,7 +984,9 @@ def create_group_account(data: GroupAccountCreate, user: Annotated[dict[str, Any
              data.normal_balance, data.parent_group_account_id, data.is_postable,
              data.is_intercompany, data.intercompany_role),
         ).fetchone()
-        audit(conn, user, "CREATE", "GROUP_ACCOUNT", row["group_account_id"])
+        audit(conn, user, "CREATE", "GROUP_ACCOUNT", row["group_account_id"], details={
+            "is_postable": data.is_postable, "parent": str(data.parent_group_account_id) if data.parent_group_account_id else None
+        })
         conn.commit()
     return row
 
@@ -802,8 +1011,15 @@ def list_accounts(user: Annotated[dict[str, Any], Depends(get_current_user)], co
 
 @app.post("/api/accounts", status_code=201)
 def create_account(data: CompanyAccountCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "ACCOUNT_MANAGE")
     ensure_company_access(user, data.company_id)
     with pool.connection() as conn:
+        group_account = conn.execute(
+            "SELECT is_postable FROM erp.group_accounts WHERE group_id=%s AND group_account_id=%s AND is_active=TRUE",
+            (user["group_id"], data.group_account_id),
+        ).fetchone()
+        if not group_account or not group_account["is_postable"]:
+            raise HTTPException(status_code=422, detail="يمكن ربط حساب الشركة بحساب حركة فقط، وليس بحساب رئيسي")
         row = conn.execute(
             """
             INSERT INTO erp.accounts
@@ -816,6 +1032,123 @@ def create_account(data: CompanyAccountCreate, user: Annotated[dict[str, Any], D
         audit(conn, user, "CREATE", "ACCOUNT", row["account_id"], data.company_id)
         conn.commit()
     return row
+
+
+@app.get("/api/currencies")
+def list_currencies(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> list[dict[str, Any]]:
+    with pool.connection() as conn:
+        return conn.execute(
+            """SELECT currency_code, currency_name_ar, currency_name_en, symbol,
+                      decimal_places, is_base, is_active
+               FROM erp.currencies WHERE group_id=%s AND is_active=TRUE
+               ORDER BY is_base DESC, currency_code""",
+            (user["group_id"],),
+        ).fetchall()
+
+
+@app.post("/api/currencies", status_code=201)
+def create_currency(data: CurrencyCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "CURRENCY_MANAGE")
+    code = data.currency_code.upper()
+    with pool.connection() as conn:
+        row = conn.execute(
+            """INSERT INTO erp.currencies
+                   (group_id, currency_code, currency_name_ar, currency_name_en, symbol, decimal_places)
+               VALUES (%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (group_id, currency_code) DO UPDATE
+                 SET currency_name_ar=EXCLUDED.currency_name_ar,
+                     currency_name_en=EXCLUDED.currency_name_en,
+                     symbol=EXCLUDED.symbol, decimal_places=EXCLUDED.decimal_places, is_active=TRUE
+               RETURNING *""",
+            (user["group_id"], code, data.currency_name_ar, data.currency_name_en,
+             data.symbol, data.decimal_places),
+        ).fetchone()
+        audit(conn, user, "UPSERT", "CURRENCY", code)
+        conn.commit()
+        return row
+
+
+@app.get("/api/exchange-rates")
+def list_exchange_rates(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    company_id: UUID | None = None,
+    currency_code: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[dict[str, Any]]:
+    query = """SELECT exchange_rate_id, company_id, rate_date, from_currency, to_currency,
+                      rate_type, rate, source, notes, created_at
+               FROM erp.exchange_rates WHERE group_id=%s"""
+    params: list[Any] = [user["group_id"]]
+    if company_id is not None:
+        ensure_company_access(user, company_id)
+        query += " AND (company_id=%s OR company_id IS NULL)"
+        params.append(company_id)
+    if currency_code:
+        query += " AND from_currency=%s"
+        params.append(currency_code.upper())
+    if date_from is not None:
+        query += " AND rate_date>=%s"
+        params.append(date_from)
+    if date_to is not None:
+        query += " AND rate_date<=%s"
+        params.append(date_to)
+    query += " ORDER BY rate_date DESC, from_currency, rate_type"
+    with pool.connection() as conn:
+        return conn.execute(query, params).fetchall()
+
+
+@app.post("/api/exchange-rates", status_code=201)
+def create_exchange_rate(data: ExchangeRateCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "CURRENCY_MANAGE")
+    if data.company_id:
+        ensure_company_access(user, data.company_id)
+    currency = data.from_currency.upper()
+    with pool.connection() as conn:
+        base = get_base_currency(conn, user["group_id"])
+        if currency == base and data.rate != 1:
+            raise HTTPException(status_code=422, detail="سعر العملة الأساسية يجب أن يساوي 1")
+        exists = conn.execute(
+            "SELECT 1 FROM erp.currencies WHERE group_id=%s AND currency_code=%s AND is_active=TRUE",
+            (user["group_id"], currency),
+        ).fetchone()
+        if not exists:
+            raise HTTPException(status_code=422, detail="أضف العملة أولاً")
+        row = conn.execute(
+            """INSERT INTO erp.exchange_rates
+                   (group_id, company_id, rate_date, from_currency, to_currency,
+                    rate_type, rate, source, notes, created_by)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (group_id, company_id, rate_date, from_currency, to_currency, rate_type)
+               DO UPDATE SET rate=EXCLUDED.rate, source=EXCLUDED.source, notes=EXCLUDED.notes,
+                             created_by=EXCLUDED.created_by, created_at=NOW()
+               RETURNING *""",
+            (user["group_id"], data.company_id, data.rate_date, currency, base,
+             data.rate_type, data.rate, data.source, data.notes, user["user_id"]),
+        ).fetchone()
+        audit(conn, user, "UPSERT", "EXCHANGE_RATE", row["exchange_rate_id"], data.company_id,
+              {"currency": currency, "rate": str(data.rate), "date": str(data.rate_date)})
+        conn.commit()
+        return row
+
+
+@app.get("/api/exchange-rates/resolve")
+def resolve_exchange_rate(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    currency_code: str,
+    rate_date: date,
+    company_id: UUID | None = None,
+    rate_type: Literal["SPOT", "AVERAGE", "CLOSING"] = "SPOT",
+) -> dict[str, Any]:
+    if company_id:
+        ensure_company_access(user, company_id)
+    with pool.connection() as conn:
+        rate, source = resolve_exchange_rate_db(
+            conn, group_id=user["group_id"], company_id=company_id,
+            currency_code=currency_code, rate_date=rate_date, rate_type=rate_type,
+        )
+        return {"currency": currency_code.upper(), "base_currency": get_base_currency(conn, user["group_id"]),
+                "rate": rate, "rate_type": rate_type, "source": source}
 
 
 @app.get("/api/branches")
@@ -929,6 +1262,7 @@ def list_vouchers(user: Annotated[dict[str, Any], Depends(get_current_user)], co
 
 @app.post("/api/vouchers", status_code=201)
 def create_voucher(data: VoucherCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "VOUCHER_CREATE")
     ensure_company_access(user, data.company_id)
     with pool.connection() as conn:
         try:
@@ -945,6 +1279,151 @@ def create_voucher(data: VoucherCreate, user: Annotated[dict[str, Any], Depends(
             conn.rollback(); raise
         except Exception as exc:
             conn.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/vouchers/{voucher_id}")
+def get_voucher(voucher_id: UUID, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    with pool.connection() as conn:
+        voucher=conn.execute(
+            """SELECT v.*, c.company_code, c.company_name
+               FROM erp.journal_vouchers v JOIN erp.companies c ON c.company_id=v.company_id
+               WHERE v.group_id=%s AND v.voucher_id=%s""",
+            (user["group_id"],voucher_id),
+        ).fetchone()
+        if not voucher:
+            raise HTTPException(status_code=404,detail="القيد غير موجود")
+        ensure_company_access(user,voucher["company_id"])
+        voucher["entries"]=conn.execute(
+            """SELECT e.entry_id,e.line_no,e.account_id,e.entry_description,e.debit_amount,e.credit_amount,
+                      e.currency,e.exchange_rate,e.foreign_debit,e.foreign_credit,
+                      e.counterparty_company_id,e.intercompany_reference,e.branch_id,e.cost_center_id,
+                      a.local_account_code,a.local_account_name,cc.center_code,cc.center_name
+               FROM erp.journal_entries e
+               JOIN erp.accounts a ON a.account_id=e.account_id
+               LEFT JOIN erp.cost_centers cc ON cc.cost_center_id=e.cost_center_id
+               WHERE e.voucher_id=%s ORDER BY e.line_no""",(voucher_id,),
+        ).fetchall()
+        return voucher
+
+
+@app.put("/api/vouchers/{voucher_id}")
+def update_voucher(
+    voucher_id: UUID, data: VoucherUpdate, user: Annotated[dict[str, Any], Depends(get_current_user)]
+) -> dict[str, Any]:
+    require_permission(user, "VOUCHER_EDIT")
+    with pool.connection() as conn:
+        with conn.transaction():
+            voucher = conn.execute(
+                "SELECT * FROM erp.journal_vouchers WHERE group_id=%s AND voucher_id=%s FOR UPDATE",
+                (user["group_id"], voucher_id),
+            ).fetchone()
+            if not voucher:
+                raise HTTPException(status_code=404, detail="القيد غير موجود")
+            ensure_company_access(user, voucher["company_id"])
+            if voucher["status"] != "DRAFT":
+                raise HTTPException(status_code=409, detail="يمكن تعديل القيود المسودة فقط")
+            conn.execute(
+                """UPDATE erp.journal_vouchers
+                   SET voucher_no=%s, document_date=%s, posting_date=%s, description=%s,
+                       updated_by=%s, updated_at=NOW()
+                   WHERE voucher_id=%s""",
+                (data.voucher_no, data.document_date, data.posting_date, data.description, user["user_id"], voucher_id),
+            )
+            conn.execute("DELETE FROM erp.journal_entries WHERE voucher_id=%s", (voucher_id,))
+            _insert_voucher_entries(
+                conn, user=user, company_id=voucher["company_id"], voucher_id=voucher_id,
+                entries=[e.model_dump() for e in data.entries],
+            )
+            audit(conn, user, "UPDATE", "VOUCHER", voucher_id, voucher["company_id"], {"status": "DRAFT"})
+            return conn.execute(
+                "SELECT voucher_id,voucher_no,voucher_type,status,posting_date,draft_version FROM erp.journal_vouchers WHERE voucher_id=%s",
+                (voucher_id,),
+            ).fetchone()
+
+
+@app.delete("/api/vouchers/{voucher_id}")
+def delete_voucher(voucher_id: UUID, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, bool]:
+    require_permission(user, "VOUCHER_DELETE")
+    with pool.connection() as conn:
+        with conn.transaction():
+            voucher = conn.execute(
+                "SELECT company_id,status,voucher_no FROM erp.journal_vouchers WHERE group_id=%s AND voucher_id=%s FOR UPDATE",
+                (user["group_id"], voucher_id),
+            ).fetchone()
+            if not voucher:
+                raise HTTPException(status_code=404, detail="القيد غير موجود")
+            ensure_company_access(user, voucher["company_id"])
+            if voucher["status"] != "DRAFT":
+                raise HTTPException(status_code=409, detail="يمكن حذف القيود المسودة فقط")
+            audit(conn, user, "DELETE", "VOUCHER", voucher_id, voucher["company_id"], {"voucher_no": voucher["voucher_no"]})
+            conn.execute("DELETE FROM erp.journal_vouchers WHERE voucher_id=%s", (voucher_id,))
+            return {"deleted": True}
+
+
+@app.post("/api/vouchers/{voucher_id}/post")
+def post_voucher(voucher_id: UUID, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "VOUCHER_POST")
+    with pool.connection() as conn:
+        with conn.transaction():
+            voucher = conn.execute(
+                "SELECT company_id,status,posting_date FROM erp.journal_vouchers WHERE group_id=%s AND voucher_id=%s FOR UPDATE",
+                (user["group_id"], voucher_id),
+            ).fetchone()
+            if not voucher:
+                raise HTTPException(status_code=404, detail="القيد غير موجود")
+            ensure_company_access(user, voucher["company_id"])
+            if voucher["status"] != "DRAFT":
+                raise HTTPException(status_code=409, detail="القيد ليس مسودة")
+            ensure_open_period(conn, voucher["company_id"], voucher["posting_date"])
+            conn.execute("SELECT erp.post_voucher(%s,%s)", (voucher_id, user["user_id"]))
+            audit(conn, user, "POST", "VOUCHER", voucher_id, voucher["company_id"])
+            return {"voucher_id": voucher_id, "status": "POSTED"}
+
+
+@app.get("/api/opening-balances")
+def list_opening_balances(
+    user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID
+) -> list[dict[str, Any]]:
+    ensure_company_access(user, company_id)
+    with pool.connection() as conn:
+        return conn.execute(
+            """SELECT ob.opening_batch_id,ob.batch_no,ob.opening_date,ob.description,
+                      v.voucher_id,v.voucher_no,v.status,v.created_at,v.posted_at,
+                      COALESCE((SELECT SUM(e.debit_amount) FROM erp.journal_entries e WHERE e.voucher_id=v.voucher_id),0) AS total_debit,
+                      COALESCE((SELECT SUM(e.credit_amount) FROM erp.journal_entries e WHERE e.voucher_id=v.voucher_id),0) AS total_credit
+               FROM erp.opening_balance_batches ob
+               JOIN erp.journal_vouchers v ON v.voucher_id=ob.voucher_id
+               WHERE ob.group_id=%s AND ob.company_id=%s
+               ORDER BY ob.opening_date DESC,ob.created_at DESC""",
+            (user["group_id"], company_id),
+        ).fetchall()
+
+
+@app.post("/api/opening-balances", status_code=201)
+def create_opening_balance(
+    data: OpeningBalanceCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]
+) -> dict[str, Any]:
+    require_permission(user, "OPENING_BALANCE_CREATE")
+    ensure_company_access(user, data.company_id)
+    with pool.connection() as conn:
+        with conn.transaction():
+            voucher = create_voucher_db(
+                conn, user=user, company_id=data.company_id,
+                voucher_no=f"OPEN-{data.batch_no}", voucher_type="OPENING",
+                document_date=data.opening_date, posting_date=data.opening_date,
+                description=data.description or f"أرصدة افتتاحية {data.batch_no}",
+                entries=[e.model_dump() for e in data.entries], source_module="OPENING",
+                external_reference=data.batch_no, post_immediately=data.post_immediately,
+            )
+            batch = conn.execute(
+                """INSERT INTO erp.opening_balance_batches
+                       (group_id,company_id,batch_no,opening_date,description,voucher_id,created_by)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                (user["group_id"],data.company_id,data.batch_no,data.opening_date,data.description,
+                 voucher["voucher_id"],user["user_id"]),
+            ).fetchone()
+            audit(conn,user,"CREATE","OPENING_BALANCE",batch["opening_batch_id"],data.company_id,{"status":voucher["status"]})
+            return {**batch,"status":voucher["status"]}
 
 
 @app.get("/api/parties")
@@ -966,6 +1445,7 @@ def list_parties(user: Annotated[dict[str, Any], Depends(get_current_user)], com
 
 @app.post("/api/parties", status_code=201)
 def create_party(data: PartyCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "PARTY_MANAGE")
     ensure_company_access(user, data.company_id)
     if data.party_type in ("CUSTOMER", "BOTH") and not data.receivable_account_id:
         raise HTTPException(status_code=422, detail="حساب العملاء مطلوب")
@@ -999,12 +1479,14 @@ def list_bank_accounts(user: Annotated[dict[str, Any], Depends(get_current_user)
         return conn.execute(
             """SELECT b.bank_account_id, b.bank_code, b.bank_name, b.account_name,
                       b.account_number, b.iban, b.currency, b.opening_balance,
-                      b.gl_account_id, a.local_account_code, a.local_account_name,
-                      b.opening_balance + COALESCE(SUM(CASE WHEN ct.transaction_type='RECEIPT' THEN ct.amount ELSE -ct.amount END),0) AS current_balance
+                      b.opening_exchange_rate, b.opening_balance_base,
+                      a.local_account_code, a.local_account_name,
+                      b.opening_balance + COALESCE(SUM(CASE WHEN ct.transaction_type='RECEIPT' THEN ct.amount ELSE -ct.amount END),0) AS current_balance,
+                      b.opening_balance_base + COALESCE(SUM(CASE WHEN ct.transaction_type='RECEIPT' THEN ct.base_amount ELSE -ct.base_amount END),0) AS current_balance_base
                FROM erp.bank_accounts b
                JOIN erp.accounts a ON a.account_id=b.gl_account_id
                LEFT JOIN erp.cash_transactions ct ON ct.bank_account_id=b.bank_account_id AND ct.status='POSTED'
-               WHERE b.group_id=%s AND b.company_id=%s AND b.is_active
+               WHERE b.group_id=%s AND b.company_id=%s AND b.is_active=TRUE
                GROUP BY b.bank_account_id, a.account_id ORDER BY b.bank_code""",
             (user["group_id"], company_id),
         ).fetchall()
@@ -1012,19 +1494,30 @@ def list_bank_accounts(user: Annotated[dict[str, Any], Depends(get_current_user)
 
 @app.post("/api/bank-accounts", status_code=201)
 def create_bank_account(data: BankAccountCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "BANK_MANAGE")
     ensure_company_access(user, data.company_id)
     with pool.connection() as conn:
-        ensure_account(conn, user["group_id"], data.company_id, data.gl_account_id)
+        currency = data.currency.upper()
+        rate = data.opening_exchange_rate
+        source = "MANUAL" if rate else "BASE"
+        if rate is None:
+            rate, source = resolve_exchange_rate_db(
+                conn, group_id=user["group_id"], company_id=data.company_id,
+                currency_code=currency, rate_date=date.today(), rate_type="SPOT",
+            )
+        opening_base = money(data.opening_balance * rate)
         row = conn.execute(
             """INSERT INTO erp.bank_accounts
                    (group_id, company_id, bank_code, bank_name, account_name,
-                    account_number, iban, currency, gl_account_id, opening_balance)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                    account_number, iban, currency, gl_account_id, opening_balance,
+                    opening_exchange_rate, opening_balance_base)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
             (user["group_id"], data.company_id, data.bank_code, data.bank_name,
-             data.account_name, data.account_number, data.iban, data.currency.upper(),
-             data.gl_account_id, data.opening_balance),
+             data.account_name, data.account_number, data.iban, currency,
+             data.gl_account_id, data.opening_balance, rate, opening_base),
         ).fetchone()
-        audit(conn, user, "CREATE", "BANK_ACCOUNT", row["bank_account_id"], data.company_id)
+        audit(conn, user, "CREATE", "BANK_ACCOUNT", row["bank_account_id"], data.company_id,
+              {"currency": currency, "rate": str(rate), "rate_source": source})
         conn.commit()
     return row
 
@@ -1033,7 +1526,8 @@ def create_bank_account(data: BankAccountCreate, user: Annotated[dict[str, Any],
 def list_invoices(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, invoice_type: str | None = None) -> list[dict[str, Any]]:
     ensure_company_access(user, company_id)
     query = """SELECT i.invoice_id, i.invoice_type, i.invoice_no, i.invoice_date, i.due_date,
-                      i.currency, i.subtotal, i.tax_amount, i.total_amount, i.status,
+                      i.currency, i.exchange_rate, i.subtotal, i.tax_amount, i.total_amount,
+                      i.base_subtotal, i.base_tax_amount, i.base_total_amount, i.status,
                       p.party_code, p.party_name, i.description
                FROM erp.invoices i JOIN erp.parties p ON p.party_id=i.party_id
                WHERE i.group_id=%s AND i.company_id=%s"""
@@ -1048,17 +1542,18 @@ def list_invoices(user: Annotated[dict[str, Any], Depends(get_current_user)], co
 
 @app.post("/api/invoices", status_code=201)
 def create_invoice(data: InvoiceCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "PARTY_MANAGE")
     ensure_company_access(user, data.company_id)
     if data.due_date < data.invoice_date:
         raise HTTPException(status_code=422, detail="تاريخ الاستحقاق لا يسبق تاريخ الفاتورة")
     with pool.connection() as conn:
-        try:
+        with conn.transaction():
             party = conn.execute(
                 "SELECT * FROM erp.parties WHERE group_id=%s AND company_id=%s AND party_id=%s AND is_active",
                 (user["group_id"], data.company_id, data.party_id),
             ).fetchone()
             if not party:
-                raise HTTPException(status_code=422, detail="العميل أو المورد غير موجود")
+                raise HTTPException(status_code=422, detail="العميل/المورد غير موجود")
             if data.invoice_type == "SALES" and party["party_type"] not in ("CUSTOMER", "BOTH"):
                 raise HTTPException(status_code=422, detail="الطرف ليس عميلاً")
             if data.invoice_type == "PURCHASE" and party["party_type"] not in ("VENDOR", "BOTH"):
@@ -1067,65 +1562,66 @@ def create_invoice(data: InvoiceCreate, user: Annotated[dict[str, Any], Depends(
                 party["receivable_account_id"] if data.invoice_type == "SALES" else party["payable_account_id"]
             )
             if not control_account:
-                raise HTTPException(status_code=422, detail="حساب العميل/المورد غير محدد")
+                raise HTTPException(status_code=422, detail="حدد حساب العملاء/الموردين للطرف أو الفاتورة")
             ensure_account(conn, user["group_id"], data.company_id, control_account)
-            if data.tax_account_id:
-                ensure_account(conn, user["group_id"], data.company_id, data.tax_account_id)
-
-            calculated = []
-            subtotal = Decimal("0")
-            tax_total = Decimal("0")
+            currency = data.currency.upper()
+            if data.exchange_rate is not None:
+                rate, rate_source = Decimal(str(data.exchange_rate)), "MANUAL"
+            else:
+                rate, rate_source = resolve_exchange_rate_db(
+                    conn, group_id=user["group_id"], company_id=data.company_id,
+                    currency_code=currency, rate_date=data.invoice_date, rate_type="SPOT",
+                )
+            line_values=[]
+            subtotal=tax_total=Decimal("0")
             for line in data.lines:
                 ensure_account(conn, user["group_id"], data.company_id, line.account_id)
                 net = money(line.quantity * line.unit_price)
                 tax = money(net * line.tax_rate / Decimal("100"))
                 total = money(net + tax)
+                line_values.append((line, net, tax, total, money(net*rate), money(tax*rate), money(total*rate)))
                 subtotal += net; tax_total += tax
-                calculated.append((line, net, tax, total))
-            subtotal = money(subtotal); tax_total = money(tax_total); total_amount = money(subtotal + tax_total)
-            if tax_total > 0 and not data.tax_account_id:
-                raise HTTPException(status_code=422, detail="اختر حساب الضريبة لأن الفاتورة تحتوي ضريبة")
-
+            subtotal=money(subtotal); tax_total=money(tax_total); total_amount=money(subtotal+tax_total)
+            base_subtotal=money(subtotal*rate); base_tax=money(tax_total*rate); base_total=money(total_amount*rate)
             invoice = conn.execute(
                 """INSERT INTO erp.invoices
                        (group_id, company_id, invoice_type, invoice_no, party_id,
-                        invoice_date, due_date, currency, exchange_rate, description,
-                        subtotal, tax_amount, total_amount, control_account_id,
-                        tax_account_id, status, created_by)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s)
+                        invoice_date, due_date, currency, exchange_rate, exchange_rate_source, description,
+                        subtotal, tax_amount, total_amount, base_subtotal, base_tax_amount, base_total_amount,
+                        control_account_id, tax_account_id, created_by)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    RETURNING *""",
                 (user["group_id"], data.company_id, data.invoice_type, data.invoice_no,
-                 data.party_id, data.invoice_date, data.due_date, data.currency.upper(),
-                 data.exchange_rate, data.description, subtotal, tax_total, total_amount,
+                 data.party_id, data.invoice_date, data.due_date, currency, rate, rate_source,
+                 data.description, subtotal, tax_total, total_amount, base_subtotal, base_tax, base_total,
                  control_account, data.tax_account_id, user["user_id"]),
             ).fetchone()
-            for idx, (line, net, tax, total) in enumerate(calculated, 1):
+            for idx,(line,net,tax,total,bnet,btax,btotal) in enumerate(line_values,1):
                 conn.execute(
                     """INSERT INTO erp.invoice_lines
                            (invoice_id, group_id, company_id, line_no, description,
-                            account_id, quantity, unit_price, tax_rate, net_amount,
-                            tax_amount, total_amount, cost_center_id)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (invoice["invoice_id"], user["group_id"], data.company_id, idx,
-                     line.description, line.account_id, line.quantity, line.unit_price,
-                     line.tax_rate, net, tax, total, line.cost_center_id),
+                            account_id, quantity, unit_price, tax_rate, net_amount, tax_amount, total_amount,
+                            base_net_amount, base_tax_amount, base_total_amount, cost_center_id)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (invoice["invoice_id"], user["group_id"], data.company_id, idx, line.description,
+                     line.account_id, line.quantity, line.unit_price, line.tax_rate, net, tax, total,
+                     bnet, btax, btotal, line.cost_center_id),
                 )
-
             if data.post_immediately:
-                entries: list[dict[str, Any]] = []
+                entries=[]
                 if data.invoice_type == "SALES":
-                    entries.append({"account_id": control_account, "debit_amount": total_amount, "credit_amount": 0, "description": f"فاتورة مبيعات {data.invoice_no}"})
-                    for line, net, _tax, _total in calculated:
-                        entries.append({"account_id": line.account_id, "debit_amount": 0, "credit_amount": net, "description": line.description, "cost_center_id": line.cost_center_id})
-                    if tax_total > 0:
-                        entries.append({"account_id": data.tax_account_id, "debit_amount": 0, "credit_amount": tax_total, "description": "ضريبة مخرجات"})
+                    entries.append({"account_id": control_account, "debit_amount": base_total, "credit_amount": 0, "description": f"فاتورة مبيعات {data.invoice_no}"})
+                    for line,net,tax,total,bnet,btax,btotal in line_values:
+                        entries.append({"account_id": line.account_id, "debit_amount": 0, "credit_amount": bnet, "description": line.description, "cost_center_id": line.cost_center_id})
+                    if base_tax and data.tax_account_id:
+                        entries.append({"account_id": data.tax_account_id, "debit_amount": 0, "credit_amount": base_tax, "description": "ضريبة مخرجات"})
                 else:
-                    for line, net, _tax, _total in calculated:
-                        entries.append({"account_id": line.account_id, "debit_amount": net, "credit_amount": 0, "description": line.description, "cost_center_id": line.cost_center_id})
-                    if tax_total > 0:
-                        entries.append({"account_id": data.tax_account_id, "debit_amount": tax_total, "credit_amount": 0, "description": "ضريبة مدخلات"})
-                    entries.append({"account_id": control_account, "debit_amount": 0, "credit_amount": total_amount, "description": f"فاتورة مشتريات {data.invoice_no}"})
-                voucher = create_voucher_db(
+                    for line,net,tax,total,bnet,btax,btotal in line_values:
+                        entries.append({"account_id": line.account_id, "debit_amount": bnet, "credit_amount": 0, "description": line.description, "cost_center_id": line.cost_center_id})
+                    if base_tax and data.tax_account_id:
+                        entries.append({"account_id": data.tax_account_id, "debit_amount": base_tax, "credit_amount": 0, "description": "ضريبة مدخلات"})
+                    entries.append({"account_id": control_account, "debit_amount": 0, "credit_amount": base_total, "description": f"فاتورة مشتريات {data.invoice_no}"})
+                voucher=create_voucher_db(
                     conn, user=user, company_id=data.company_id,
                     voucher_no=f"{'SI' if data.invoice_type == 'SALES' else 'PI'}-{data.invoice_no}",
                     document_date=data.invoice_date, posting_date=data.invoice_date,
@@ -1134,14 +1630,34 @@ def create_invoice(data: InvoiceCreate, user: Annotated[dict[str, Any], Depends(
                     external_reference=data.invoice_no, post_immediately=True,
                 )
                 conn.execute("UPDATE erp.invoices SET status='POSTED', voucher_id=%s WHERE invoice_id=%s", (voucher["voucher_id"], invoice["invoice_id"]))
-                invoice["status"] = "POSTED"; invoice["voucher_id"] = voucher["voucher_id"]
-            audit(conn, user, "CREATE", "INVOICE", invoice["invoice_id"], data.company_id, {"type": data.invoice_type, "total": str(total_amount)})
-            conn.commit()
+                invoice["status"]="POSTED"; invoice["voucher_id"]=voucher["voucher_id"]
+            audit(conn, user, "CREATE", "INVOICE", invoice["invoice_id"], data.company_id,
+                  {"type": data.invoice_type, "foreign_total": str(total_amount), "base_total": str(base_total), "currency": currency, "rate": str(rate)})
             return invoice
-        except HTTPException:
-            conn.rollback(); raise
-        except Exception as exc:
-            conn.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/invoices/{invoice_id}")
+def get_invoice(invoice_id: UUID, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    with pool.connection() as conn:
+        inv=conn.execute(
+            """SELECT i.*, p.party_code, p.party_name, p.tax_registration_no, p.address,
+                      c.company_code, c.company_name, c.legal_name, c.tax_registration_no AS company_tax_no,
+                      c.address AS company_address
+               FROM erp.invoices i
+               JOIN erp.parties p ON p.party_id=i.party_id
+               JOIN erp.companies c ON c.company_id=i.company_id
+               WHERE i.group_id=%s AND i.invoice_id=%s""",
+            (user["group_id"], invoice_id),
+        ).fetchone()
+        if not inv:
+            raise HTTPException(status_code=404, detail="الفاتورة غير موجودة")
+        ensure_company_access(user, inv["company_id"])
+        inv["lines"]=conn.execute(
+            """SELECT il.*, a.local_account_code, a.local_account_name
+               FROM erp.invoice_lines il JOIN erp.accounts a ON a.account_id=il.account_id
+               WHERE il.invoice_id=%s ORDER BY il.line_no""", (invoice_id,),
+        ).fetchall()
+        return inv
 
 
 @app.get("/api/cash-transactions")
@@ -1163,65 +1679,139 @@ def list_cash_transactions(user: Annotated[dict[str, Any], Depends(get_current_u
 
 @app.post("/api/cash-transactions", status_code=201)
 def create_cash_transaction(data: CashTransactionCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "BANK_MANAGE")
     ensure_company_access(user, data.company_id)
     with pool.connection() as conn:
-        try:
-            bank = conn.execute(
+        with conn.transaction():
+            bank=conn.execute(
                 "SELECT * FROM erp.bank_accounts WHERE group_id=%s AND company_id=%s AND bank_account_id=%s AND is_active",
                 (user["group_id"], data.company_id, data.bank_account_id),
             ).fetchone()
             if not bank:
                 raise HTTPException(status_code=422, detail="الحساب البنكي غير موجود")
-            offset = data.offset_account_id
-            party = None
+            party=None
             if data.party_id:
-                party = conn.execute(
+                party=conn.execute(
                     "SELECT * FROM erp.parties WHERE group_id=%s AND company_id=%s AND party_id=%s",
                     (user["group_id"], data.company_id, data.party_id),
                 ).fetchone()
-                if not party:
-                    raise HTTPException(status_code=422, detail="الطرف غير موجود")
-                if not offset:
-                    offset = party["receivable_account_id"] if data.transaction_type == "RECEIPT" else party["payable_account_id"]
+            offset=data.offset_account_id
+            if not offset and party:
+                offset = party["receivable_account_id"] if data.transaction_type=="RECEIPT" else party["payable_account_id"]
             if not offset:
-                raise HTTPException(status_code=422, detail="حدد الحساب المقابل")
+                raise HTTPException(status_code=422, detail="حدد الحساب المقابل أو اختر عميلاً/مورداً له حساب مراقبة")
             ensure_account(conn, user["group_id"], data.company_id, offset)
-            description = data.description or ("سند قبض" if data.transaction_type == "RECEIPT" else "سند صرف")
-            if data.transaction_type == "RECEIPT":
-                entries = [
-                    {"account_id": bank["gl_account_id"], "debit_amount": data.amount, "credit_amount": 0, "description": description},
-                    {"account_id": offset, "debit_amount": 0, "credit_amount": data.amount, "description": description},
+            currency=str(bank["currency"]).upper()
+            if data.exchange_rate is not None:
+                rate=Decimal(str(data.exchange_rate)); rate_source="MANUAL"
+            else:
+                rate, rate_source=resolve_exchange_rate_db(
+                    conn, group_id=user["group_id"], company_id=data.company_id,
+                    currency_code=currency, rate_date=data.transaction_date, rate_type="SPOT",
+                )
+            base_amount=money(data.amount*rate)
+            description=data.description or ("سند قبض" if data.transaction_type=="RECEIPT" else "سند صرف")
+            if data.transaction_type=="RECEIPT":
+                entries=[
+                    {"account_id": bank["gl_account_id"], "debit_amount": base_amount, "credit_amount": 0, "description": description},
+                    {"account_id": offset, "debit_amount": 0, "credit_amount": base_amount, "description": description},
                 ]
             else:
-                entries = [
-                    {"account_id": offset, "debit_amount": data.amount, "credit_amount": 0, "description": description},
-                    {"account_id": bank["gl_account_id"], "debit_amount": 0, "credit_amount": data.amount, "description": description},
+                entries=[
+                    {"account_id": offset, "debit_amount": base_amount, "credit_amount": 0, "description": description},
+                    {"account_id": bank["gl_account_id"], "debit_amount": 0, "credit_amount": base_amount, "description": description},
                 ]
-            voucher = create_voucher_db(
-                conn, user=user, company_id=data.company_id,
-                voucher_no=f"{'RV' if data.transaction_type == 'RECEIPT' else 'PV'}-{data.transaction_no}",
+            voucher=create_voucher_db(
+                conn, user=user, company_id=data.company_id, voucher_no=f"BANK-{data.transaction_no}",
                 document_date=data.transaction_date, posting_date=data.transaction_date,
                 description=description, entries=entries, source_module="BANK",
                 external_reference=data.reference_no or data.transaction_no, post_immediately=True,
             )
-            row = conn.execute(
+            row=conn.execute(
                 """INSERT INTO erp.cash_transactions
                        (group_id, company_id, transaction_type, transaction_no,
                         transaction_date, bank_account_id, party_id, offset_account_id,
-                        amount, description, reference_no, status, voucher_id, created_by)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'POSTED',%s,%s) RETURNING *""",
-                (user["group_id"], data.company_id, data.transaction_type,
-                 data.transaction_no, data.transaction_date, data.bank_account_id,
-                 data.party_id, offset, data.amount, description, data.reference_no,
-                 voucher["voucher_id"], user["user_id"]),
+                        amount, currency, exchange_rate, base_amount, description, reference_no,
+                        status, voucher_id, created_by)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'POSTED',%s,%s) RETURNING *""",
+                (user["group_id"], data.company_id, data.transaction_type, data.transaction_no,
+                 data.transaction_date, data.bank_account_id, data.party_id, offset, data.amount,
+                 currency, rate, base_amount, description, data.reference_no, voucher["voucher_id"], user["user_id"]),
             ).fetchone()
-            audit(conn, user, "CREATE", "CASH_TRANSACTION", row["cash_transaction_id"], data.company_id, {"type": data.transaction_type, "amount": str(data.amount)})
-            conn.commit()
+            audit(conn, user, "CREATE", "CASH_TRANSACTION", row["cash_transaction_id"], data.company_id,
+                  {"currency": currency, "foreign_amount": str(data.amount), "base_amount": str(base_amount), "rate": str(rate), "rate_source": rate_source})
             return row
-        except HTTPException:
-            conn.rollback(); raise
-        except Exception as exc:
-            conn.rollback(); raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/bank-revaluation-preview")
+def bank_revaluation_preview(
+    user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, revaluation_date: date
+) -> list[dict[str, Any]]:
+    ensure_company_access(user, company_id)
+    with pool.connection() as conn:
+        base=get_base_currency(conn,user["group_id"])
+        banks=conn.execute(
+            """SELECT b.bank_account_id,b.bank_code,b.bank_name,b.account_name,b.currency,b.gl_account_id,
+                      b.opening_balance + COALESCE(SUM(CASE WHEN ct.transaction_type='RECEIPT' THEN ct.amount ELSE -ct.amount END),0) AS foreign_balance,
+                      b.opening_balance_base + COALESCE(SUM(CASE WHEN ct.transaction_type='RECEIPT' THEN ct.base_amount ELSE -ct.base_amount END),0) AS book_base_balance
+               FROM erp.bank_accounts b
+               LEFT JOIN erp.cash_transactions ct ON ct.bank_account_id=b.bank_account_id AND ct.status='POSTED' AND ct.transaction_date<=%s
+               WHERE b.group_id=%s AND b.company_id=%s AND b.is_active=TRUE AND b.currency<>%s
+               GROUP BY b.bank_account_id ORDER BY b.bank_code""",
+            (revaluation_date,user["group_id"],company_id,base),
+        ).fetchall()
+        result=[]
+        for b in banks:
+            rate,source=resolve_exchange_rate_db(conn,group_id=user["group_id"],company_id=company_id,currency_code=b["currency"],rate_date=revaluation_date,rate_type="CLOSING")
+            revalued=money(Decimal(str(b["foreign_balance"]))*rate)
+            difference=money(revalued-Decimal(str(b["book_base_balance"])))
+            result.append({**b,"closing_rate":rate,"rate_source":source,"revalued_base_balance":revalued,"difference_amount":difference})
+        return result
+
+
+@app.post("/api/bank-revaluations", status_code=201)
+def create_bank_revaluations(data: BankRevaluationCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "BANK_MANAGE")
+    ensure_company_access(user,data.company_id)
+    with pool.connection() as conn:
+        preview=bank_revaluation_preview(user,data.company_id,data.revaluation_date)
+        posted=[];total=Decimal("0")
+        with conn.transaction():
+            ensure_account(conn,user["group_id"],data.company_id,data.gain_account_id)
+            ensure_account(conn,user["group_id"],data.company_id,data.loss_account_id)
+            for item in preview:
+                diff=money(item["difference_amount"])
+                if diff==0: continue
+                if diff>0:
+                    entries=[
+                        {"account_id":item["gl_account_id"],"debit_amount":diff,"credit_amount":0,"description":"إعادة تقييم عملة بنك"},
+                        {"account_id":data.gain_account_id,"debit_amount":0,"credit_amount":diff,"description":"أرباح فروق عملة"},
+                    ]
+                else:
+                    amt=money(-diff)
+                    entries=[
+                        {"account_id":data.loss_account_id,"debit_amount":amt,"credit_amount":0,"description":"خسائر فروق عملة"},
+                        {"account_id":item["gl_account_id"],"debit_amount":0,"credit_amount":amt,"description":"إعادة تقييم عملة بنك"},
+                    ]
+                voucher=create_voucher_db(
+                    conn,user=user,company_id=data.company_id,
+                    voucher_no=f"FX-{data.revaluation_date.strftime('%Y%m%d')}-{item['bank_code']}",
+                    document_date=data.revaluation_date,posting_date=data.revaluation_date,
+                    description=f"إعادة تقييم {item['bank_name']} {item['currency']}",entries=entries,
+                    source_module="FX",external_reference=item["bank_code"],post_immediately=True,
+                )
+                row=conn.execute(
+                    """INSERT INTO erp.bank_revaluations
+                           (group_id,company_id,bank_account_id,revaluation_date,currency,closing_rate,
+                            foreign_balance,book_base_balance,revalued_base_balance,difference_amount,voucher_id,created_by)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING bank_revaluation_id""",
+                    (user["group_id"],data.company_id,item["bank_account_id"],data.revaluation_date,item["currency"],
+                     item["closing_rate"],item["foreign_balance"],item["book_base_balance"],
+                     item["revalued_base_balance"],diff,voucher["voucher_id"],user["user_id"]),
+                ).fetchone()
+                posted.append(row);total+=diff
+            audit(conn,user,"CREATE","BANK_REVALUATION",None,data.company_id,{"date":str(data.revaluation_date),"count":len(posted),"net_difference":str(money(total))})
+        return {"posted_count":len(posted),"net_difference":money(total)}
 
 
 @app.get("/api/asset-categories")
@@ -1243,6 +1833,7 @@ def list_asset_categories(user: Annotated[dict[str, Any], Depends(get_current_us
 
 @app.post("/api/asset-categories", status_code=201)
 def create_asset_category(data: AssetCategoryCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "ASSET_MANAGE")
     ensure_company_access(user, data.company_id)
     with pool.connection() as conn:
         for account_id in (data.asset_account_id, data.accumulated_depreciation_account_id, data.depreciation_expense_account_id):
@@ -1278,6 +1869,7 @@ def list_assets(user: Annotated[dict[str, Any], Depends(get_current_user)], comp
 
 @app.post("/api/assets", status_code=201)
 def create_asset(data: AssetCreate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "ASSET_MANAGE")
     ensure_company_access(user, data.company_id)
     if data.residual_value > data.acquisition_cost:
         raise HTTPException(status_code=422, detail="القيمة التخريدية لا تتجاوز تكلفة الأصل")
@@ -1326,6 +1918,7 @@ def depreciation_preview(user: Annotated[dict[str, Any], Depends(get_current_use
 
 @app.post("/api/assets/run-depreciation", status_code=201)
 def run_depreciation(data: DepreciationRunRequest, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "ASSET_MANAGE")
     ensure_company_access(user, data.company_id)
     with pool.connection() as conn:
         try:
@@ -1386,7 +1979,7 @@ def list_users(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> li
     require_group_admin(user)
     with pool.connection() as conn:
         return conn.execute(
-            """SELECT u.user_id, u.full_name, u.email, u.role_code, u.is_group_admin,
+            """SELECT u.user_id, u.full_name, u.email, u.role_code, u.permissions, u.is_group_admin,
                       u.company_id, c.company_name, u.is_active, u.last_login_at, u.created_at
                FROM erp.app_users u LEFT JOIN erp.companies c ON c.company_id=u.company_id
                WHERE u.group_id=%s ORDER BY u.created_at""",
@@ -1407,10 +2000,11 @@ def create_user(data: UserCreate, user: Annotated[dict[str, Any], Depends(get_cu
         row = conn.execute(
             """INSERT INTO erp.app_users
                    (group_id, company_id, email, password_hash, is_group_admin,
-                    full_name, role_code)
-               VALUES (%s,%s,%s,%s,FALSE,%s,%s)
-               RETURNING user_id, full_name, email, role_code, company_id, is_active""",
-            (user["group_id"], data.company_id, str(data.email).lower(), hash_password(data.password), data.full_name, data.role_code),
+                    full_name, role_code, permissions)
+               VALUES (%s,%s,%s,%s,FALSE,%s,%s,%s::jsonb)
+               RETURNING user_id, full_name, email, role_code, company_id, permissions, is_active""",
+            (user["group_id"], data.company_id, str(data.email).lower(), hash_password(data.password),
+             data.full_name, data.role_code, json.dumps(data.permissions)),
         ).fetchone()
         audit(conn, user, "CREATE", "USER", row["user_id"], data.company_id, {"role": data.role_code})
         conn.commit()
@@ -1419,6 +2013,7 @@ def create_user(data: UserCreate, user: Annotated[dict[str, Any], Depends(get_cu
 
 @app.get("/api/trial-balance")
 def trial_balance(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, as_of_date: date = Query(default_factory=date.today)) -> list[dict[str, Any]]:
+    require_permission(user, "REPORT_VIEW")
     ensure_company_access(user, company_id)
     with pool.connection() as conn:
         return conn.execute(
@@ -1439,6 +2034,7 @@ def trial_balance(user: Annotated[dict[str, Any], Depends(get_current_user)], co
 
 @app.get("/api/general-ledger")
 def general_ledger(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, account_id: UUID, date_from: date, date_to: date) -> list[dict[str, Any]]:
+    require_permission(user, "REPORT_VIEW")
     ensure_company_access(user, company_id)
     with pool.connection() as conn:
         return conn.execute(
@@ -1455,6 +2051,7 @@ def general_ledger(user: Annotated[dict[str, Any], Depends(get_current_user)], c
 
 @app.get("/api/income-statement")
 def income_statement(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, date_from: date, date_to: date) -> dict[str, Any]:
+    require_permission(user, "REPORT_VIEW")
     ensure_company_access(user, company_id)
     with pool.connection() as conn:
         rows = conn.execute(
@@ -1476,6 +2073,7 @@ def income_statement(user: Annotated[dict[str, Any], Depends(get_current_user)],
 
 @app.get("/api/balance-sheet")
 def balance_sheet(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, as_of_date: date) -> dict[str, Any]:
+    require_permission(user, "REPORT_VIEW")
     ensure_company_access(user, company_id)
     with pool.connection() as conn:
         rows = conn.execute(
@@ -1496,6 +2094,7 @@ def balance_sheet(user: Annotated[dict[str, Any], Depends(get_current_user)], co
 
 @app.get("/api/consolidated-trial-balance")
 def consolidated_trial_balance(user: Annotated[dict[str, Any], Depends(get_current_user)], as_of_date: date = Query(default_factory=date.today)) -> list[dict[str, Any]]:
+    require_permission(user, "REPORT_VIEW")
     require_group_admin(user)
     with pool.connection() as conn:
         rows = conn.execute(
