@@ -14,8 +14,8 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 from psycopg import Connection
 from psycopg.rows import dict_row
@@ -24,6 +24,7 @@ from psycopg_pool import ConnectionPool
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 AUTO_MIGRATE = os.environ.get("AUTO_MIGRATE", "true").lower() == "true"
+SYNC_ADMIN_CREDENTIALS = os.environ.get("SYNC_ADMIN_CREDENTIALS", "true").lower() == "true"
 ALGORITHM = "HS256"
 MONEY = Decimal("0.0001")
 
@@ -386,7 +387,21 @@ def migrate_and_seed() -> None:
             "SELECT user_id FROM erp.app_users WHERE group_id=%s AND LOWER(email)=LOWER(%s)",
             (group["group_id"], admin_email),
         ).fetchone()
-        if not existing:
+        if existing:
+            if SYNC_ADMIN_CREDENTIALS:
+                conn.execute(
+                    """
+                    UPDATE erp.app_users
+                       SET password_hash=%s,
+                           is_group_admin=TRUE,
+                           is_active=TRUE,
+                           full_name=COALESCE(NULLIF(full_name,''),'مدير المجموعة'),
+                           role_code='GROUP_ADMIN'
+                     WHERE user_id=%s
+                    """,
+                    (hash_password(admin_password), existing["user_id"]),
+                )
+        else:
             conn.execute(
                 """
                 INSERT INTO erp.app_users
@@ -408,10 +423,23 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Cairo Group Holding ERP",
-    version="0.3.0",
+    version="0.3.2",
     description="Multi-company cloud accounting: GL, AR, AP, banks and fixed assets",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Keep the browser response JSON so the Arabic UI can display a useful message.
+    print(f"Unhandled error on {request.method} {request.url.path}: {type(exc).__name__}: {exc}", flush=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "حدث خطأ داخلي في الخادم. افتح Render > Logs وراجع آخر سطر أحمر.",
+            "error_type": type(exc).__name__,
+        },
+    )
 
 
 class LoginRequest(BaseModel):
@@ -615,7 +643,7 @@ def home() -> FileResponse:
 def health() -> dict[str, str]:
     with pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok", "version": "0.3.0"}
+    return {"status": "ok", "version": "0.3.2"}
 
 
 @app.post("/api/auth/login")
@@ -860,14 +888,16 @@ def create_fiscal_year(data: FiscalYearCreate, user: Annotated[dict[str, Any], D
 @app.get("/api/fiscal-periods")
 def list_fiscal_periods(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, fiscal_year_id: UUID | None = None) -> list[dict[str, Any]]:
     ensure_company_access(user, company_id)
-    with pool.connection() as conn:
-        return conn.execute(
-            """SELECT period_id, fiscal_year_id, period_no, period_name, start_date, end_date, status
+    query = """SELECT period_id, fiscal_year_id, period_no, period_name, start_date, end_date, status
                FROM erp.fiscal_periods
-               WHERE group_id=%s AND company_id=%s AND (%s IS NULL OR fiscal_year_id=%s)
-               ORDER BY start_date""",
-            (user["group_id"], company_id, fiscal_year_id, fiscal_year_id),
-        ).fetchall()
+               WHERE group_id=%s AND company_id=%s"""
+    params: list[Any] = [user["group_id"], company_id]
+    if fiscal_year_id is not None:
+        query += " AND fiscal_year_id=%s"
+        params.append(fiscal_year_id)
+    query += " ORDER BY start_date"
+    with pool.connection() as conn:
+        return conn.execute(query, params).fetchall()
 
 
 @app.patch("/api/fiscal-periods/{period_id}")
@@ -920,17 +950,18 @@ def create_voucher(data: VoucherCreate, user: Annotated[dict[str, Any], Depends(
 @app.get("/api/parties")
 def list_parties(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, party_type: str | None = None) -> list[dict[str, Any]]:
     ensure_company_access(user, company_id)
-    with pool.connection() as conn:
-        return conn.execute(
-            """SELECT party_id, party_code, party_name, party_type, tax_registration_no,
+    query = """SELECT party_id, party_code, party_name, party_type, tax_registration_no,
                       email, phone, address, receivable_account_id, payable_account_id,
                       credit_limit, payment_terms_days
                FROM erp.parties
-               WHERE group_id=%s AND company_id=%s AND is_active=TRUE
-                 AND (%s IS NULL OR party_type=%s OR party_type='BOTH')
-               ORDER BY party_code""",
-            (user["group_id"], company_id, party_type, party_type),
-        ).fetchall()
+               WHERE group_id=%s AND company_id=%s AND is_active=TRUE"""
+    params: list[Any] = [user["group_id"], company_id]
+    if party_type is not None:
+        query += " AND (party_type=%s OR party_type='BOTH')"
+        params.append(party_type)
+    query += " ORDER BY party_code"
+    with pool.connection() as conn:
+        return conn.execute(query, params).fetchall()
 
 
 @app.post("/api/parties", status_code=201)
@@ -1001,16 +1032,18 @@ def create_bank_account(data: BankAccountCreate, user: Annotated[dict[str, Any],
 @app.get("/api/invoices")
 def list_invoices(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, invoice_type: str | None = None) -> list[dict[str, Any]]:
     ensure_company_access(user, company_id)
-    with pool.connection() as conn:
-        return conn.execute(
-            """SELECT i.invoice_id, i.invoice_type, i.invoice_no, i.invoice_date, i.due_date,
+    query = """SELECT i.invoice_id, i.invoice_type, i.invoice_no, i.invoice_date, i.due_date,
                       i.currency, i.subtotal, i.tax_amount, i.total_amount, i.status,
                       p.party_code, p.party_name, i.description
                FROM erp.invoices i JOIN erp.parties p ON p.party_id=i.party_id
-               WHERE i.group_id=%s AND i.company_id=%s AND (%s IS NULL OR i.invoice_type=%s)
-               ORDER BY i.invoice_date DESC, i.created_at DESC""",
-            (user["group_id"], company_id, invoice_type, invoice_type),
-        ).fetchall()
+               WHERE i.group_id=%s AND i.company_id=%s"""
+    params: list[Any] = [user["group_id"], company_id]
+    if invoice_type is not None:
+        query += " AND i.invoice_type=%s"
+        params.append(invoice_type)
+    query += " ORDER BY i.invoice_date DESC, i.created_at DESC"
+    with pool.connection() as conn:
+        return conn.execute(query, params).fetchall()
 
 
 @app.post("/api/invoices", status_code=201)
