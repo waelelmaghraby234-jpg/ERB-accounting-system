@@ -1,3 +1,13 @@
+# Cairo Group Holding ERP v3.1 — Login Repair
+
+هذا الإصدار يصلح:
+- خطأ `body stream already read` في شاشة تسجيل الدخول.
+- مزامنة بريد وكلمة مرور المدير من متغيرات Render.
+- إصلاح الأعمدة الناقصة في قواعد البيانات التي بدأت بالنسخة القديمة.
+- إرجاع أخطاء الخادم بصيغة JSON واضحة.
+
+أثناء أول نشر اجعل `AUTO_MIGRATE=true` و`SYNC_ADMIN_CREDENTIALS=true`. بعد نجاح الدخول يمكنك جعل `AUTO_MIGRATE=false`، ثم بعد تثبيت كلمة المرور داخل النظام مستقبلاً يمكن جعل `SYNC_ADMIN_CREDENTIALS=false`.
+
 # Cairo Group Holding ERP — V3
 
 نسخة تشغيلية أولى لإدارة مجموعة شركات متعددة على PostgreSQL/Supabase وRender.
