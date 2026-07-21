@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: holding-erp-api
+    name: erp-accounting-system
     runtime: docker
     plan: starter
     healthCheckPath: /health
@@ -17,6 +17,6 @@ services:
       - key: ADMIN_GROUP_CODE
         value: GROUP001
       - key: ADMIN_GROUP_NAME
-        value: My Holding Group
+        value: Cairo Group Holding
       - key: AUTO_MIGRATE
         value: "true"
