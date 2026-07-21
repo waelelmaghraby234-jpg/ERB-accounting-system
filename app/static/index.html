@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Holding ERP Starter</title>
+  <style>
+    body{font-family:Tahoma,Arial,sans-serif;background:#f4f6f8;margin:0;color:#17202a}
+    main{max-width:1000px;margin:40px auto;padding:24px}
+    .card{background:white;border-radius:14px;padding:22px;margin-bottom:18px;box-shadow:0 4px 18px rgba(0,0,0,.07)}
+    input,button{font:inherit;padding:10px 12px;margin:6px;border:1px solid #ccd1d1;border-radius:8px}
+    button{cursor:pointer;background:#17202a;color:#fff}
+    pre{direction:ltr;text-align:left;background:#111827;color:#e5e7eb;padding:16px;border-radius:10px;overflow:auto}
+    .hidden{display:none}.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  </style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>نواة نظام Holding ERP</h1>
+    <p>واجهة اختبار أولية. الواجهة الكاملة المحاسبية تحتاج مرحلة تطوير UI مستقلة.</p>
+  </div>
+  <div class="card" id="loginCard">
+    <h2>تسجيل الدخول</h2>
+    <div class="row">
+      <input id="email" type="email" placeholder="البريد الإلكتروني" />
+      <input id="password" type="password" placeholder="كلمة المرور" />
+      <button onclick="login()">دخول</button>
+    </div>
+    <p id="loginMessage"></p>
+  </div>
+  <div class="card hidden" id="appCard">
+    <h2>اختبار النظام</h2>
+    <div class="row">
+      <button onclick="callApi('/api/me')">بيانات المستخدم</button>
+      <button onclick="callApi('/api/companies')">الشركات</button>
+      <button onclick="callApi('/api/group-accounts')">دليل المجموعة</button>
+      <a href="/docs" target="_blank"><button>API Documentation</button></a>
+    </div>
+    <pre id="output">جاهز</pre>
+  </div>
+</main>
+<script>
+let token = localStorage.getItem('erp_token') || '';
+if(token){document.getElementById('loginCard').classList.add('hidden');document.getElementById('appCard').classList.remove('hidden');}
+async function login(){
+  const res=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.value,password:password.value})});
+  const data=await res.json();
+  if(!res.ok){loginMessage.textContent=data.detail||'فشل الدخول';return;}
+  token=data.access_token;localStorage.setItem('erp_token',token);location.reload();
+}
+async function callApi(path){
+  const res=await fetch(path,{headers:{Authorization:'Bearer '+token}});const data=await res.json();
+  document.getElementById('output').textContent=JSON.stringify(data,null,2);
+}
+</script>
+</body>
+</html>
