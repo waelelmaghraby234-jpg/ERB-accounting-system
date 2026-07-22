@@ -20,3 +20,7 @@ services:
         value: Cairo Group Holding
       - key: AUTO_MIGRATE
         value: "true"
+      - key: ALLOW_COMPANY_RESET
+        value: "false"
+      - key: ALLOW_TEST_UNPOST
+        value: "false"
