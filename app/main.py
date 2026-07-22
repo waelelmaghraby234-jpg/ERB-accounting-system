@@ -367,6 +367,181 @@ def seed_default_chart(conn: Connection, group_id: UUID) -> None:
             )
 
 
+def seed_professional_chart(conn: Connection, group_id: UUID) -> int:
+    """Add a detailed, multi-level chart without changing legacy accounts.
+
+    The codes intentionally use unused ranges so existing postings and mappings
+    remain untouched. The function is idempotent and can be safely re-run.
+    """
+    chart = [
+        # Current assets
+        ("110100", "النقدية وما في حكمها", "ASSET", "DEBIT", "110000", False),
+        ("110110", "الصناديق والعهد", "ASSET", "DEBIT", "110100", False),
+        ("110111", "الصندوق الرئيسي", "ASSET", "DEBIT", "110110", True),
+        ("110112", "الصناديق الفرعية", "ASSET", "DEBIT", "110110", True),
+        ("110113", "العهد النقدية", "ASSET", "DEBIT", "110110", True),
+        ("110120", "الحسابات البنكية", "ASSET", "DEBIT", "110100", False),
+        ("110121", "بنوك بالعملة المحلية", "ASSET", "DEBIT", "110120", True),
+        ("110122", "بنوك بالعملات الأجنبية", "ASSET", "DEBIT", "110120", True),
+        ("110200", "العملاء وأوراق القبض", "ASSET", "DEBIT", "110000", False),
+        ("110210", "العملاء المحليون", "ASSET", "DEBIT", "110200", True),
+        ("110220", "العملاء الأجانب", "ASSET", "DEBIT", "110200", True),
+        ("110230", "أوراق القبض", "ASSET", "DEBIT", "110200", True),
+        ("110240", "مخصص الخسائر الائتمانية المتوقعة", "ASSET", "CREDIT", "110200", True),
+        ("110300", "المخزون", "ASSET", "DEBIT", "110000", False),
+        ("110310", "مواد خام ومهمات", "ASSET", "DEBIT", "110300", True),
+        ("110320", "أعمال تحت التنفيذ", "ASSET", "DEBIT", "110300", True),
+        ("110330", "إنتاج تام", "ASSET", "DEBIT", "110300", True),
+        ("110340", "قطع غيار ومستلزمات", "ASSET", "DEBIT", "110300", True),
+        ("110400", "أصول متداولة أخرى", "ASSET", "DEBIT", "110000", False),
+        ("110410", "مصروفات مدفوعة مقدماً", "ASSET", "DEBIT", "110400", True),
+        ("110420", "تأمينات لدى الغير", "ASSET", "DEBIT", "110400", True),
+        ("110430", "سلف العاملين", "ASSET", "DEBIT", "110400", True),
+        ("110440", "ضرائب مدينة", "ASSET", "DEBIT", "110400", True),
+        # Non-current assets and projects under construction
+        ("120100", "الأصول الثابتة الملموسة", "ASSET", "DEBIT", "120000", False),
+        ("120110", "الأراضي", "ASSET", "DEBIT", "120100", True),
+        ("120120", "المباني والإنشاءات", "ASSET", "DEBIT", "120100", True),
+        ("120130", "الآلات والمعدات", "ASSET", "DEBIT", "120100", True),
+        ("120140", "السيارات ووسائل النقل", "ASSET", "DEBIT", "120100", True),
+        ("120150", "الأثاث والتجهيزات", "ASSET", "DEBIT", "120100", True),
+        ("120160", "أجهزة الحاسب والاتصالات", "ASSET", "DEBIT", "120100", True),
+        ("120170", "مجمع إهلاك الأصول الثابتة", "ASSET", "CREDIT", "120100", False),
+        ("120171", "مجمع إهلاك المباني", "ASSET", "CREDIT", "120170", True),
+        ("120172", "مجمع إهلاك الآلات والمعدات", "ASSET", "CREDIT", "120170", True),
+        ("120173", "مجمع إهلاك السيارات", "ASSET", "CREDIT", "120170", True),
+        ("120174", "مجمع إهلاك الأثاث والتجهيزات", "ASSET", "CREDIT", "120170", True),
+        ("120200", "مشروعات تحت التنفيذ", "ASSET", "DEBIT", "120000", False),
+        ("120210", "أعمال إنشائية تحت التنفيذ", "ASSET", "DEBIT", "120200", True),
+        ("120220", "معدات تحت التركيب", "ASSET", "DEBIT", "120200", True),
+        ("120230", "أتعاب تصميم واستشارات رأسمالية", "ASSET", "DEBIT", "120200", True),
+        ("120240", "دفعات مقدمة للمقاولين", "ASSET", "DEBIT", "120200", True),
+        ("120300", "الأصول غير الملموسة", "ASSET", "DEBIT", "120000", False),
+        ("120310", "برامج وأنظمة", "ASSET", "DEBIT", "120300", True),
+        ("120320", "تراخيص وحقوق استخدام", "ASSET", "DEBIT", "120300", True),
+        ("120330", "مجمع إطفاء الأصول غير الملموسة", "ASSET", "CREDIT", "120300", True),
+        # Current liabilities
+        ("210100", "الموردون وأوراق الدفع", "LIABILITY", "CREDIT", "210000", False),
+        ("210110", "الموردون المحليون", "LIABILITY", "CREDIT", "210100", True),
+        ("210120", "الموردون الأجانب", "LIABILITY", "CREDIT", "210100", True),
+        ("210130", "أوراق الدفع", "LIABILITY", "CREDIT", "210100", True),
+        ("210200", "مصروفات والتزامات مستحقة", "LIABILITY", "CREDIT", "210000", False),
+        ("210210", "رواتب وأجور مستحقة", "LIABILITY", "CREDIT", "210200", True),
+        ("210220", "فوائد مستحقة", "LIABILITY", "CREDIT", "210200", True),
+        ("210230", "مصروفات تشغيل مستحقة", "LIABILITY", "CREDIT", "210200", True),
+        ("210300", "ضرائب وتأمينات مستحقة", "LIABILITY", "CREDIT", "210000", False),
+        ("210310", "ضريبة قيمة مضافة مستحقة", "LIABILITY", "CREDIT", "210300", True),
+        ("210320", "ضرائب كسب عمل مستحقة", "LIABILITY", "CREDIT", "210300", True),
+        ("210330", "تأمينات اجتماعية مستحقة", "LIABILITY", "CREDIT", "210300", True),
+        ("210400", "قروض وتسهيلات قصيرة الأجل", "LIABILITY", "CREDIT", "210000", False),
+        ("210410", "قروض بنكية قصيرة الأجل", "LIABILITY", "CREDIT", "210400", True),
+        ("210420", "سحب على المكشوف", "LIABILITY", "CREDIT", "210400", True),
+        ("210430", "الجزء المتداول من القروض طويلة الأجل", "LIABILITY", "CREDIT", "210400", True),
+        # Non-current liabilities
+        ("220000", "الالتزامات غير المتداولة", "LIABILITY", "CREDIT", "200000", False),
+        ("220100", "القروض طويلة الأجل", "LIABILITY", "CREDIT", "220000", False),
+        ("220110", "قروض بنكية طويلة الأجل", "LIABILITY", "CREDIT", "220100", True),
+        ("220120", "قروض تمويل أصول", "LIABILITY", "CREDIT", "220100", True),
+        ("220130", "التزامات عقود الإيجار", "LIABILITY", "CREDIT", "220100", True),
+        ("220200", "مخصصات طويلة الأجل", "LIABILITY", "CREDIT", "220000", False),
+        ("220210", "مخصص مكافأة نهاية الخدمة", "LIABILITY", "CREDIT", "220200", True),
+        ("220220", "مخصص مطالبات والتزامات", "LIABILITY", "CREDIT", "220200", True),
+        # Equity
+        ("310000", "رأس المال والاحتياطيات", "EQUITY", "CREDIT", "300000", False),
+        ("310100", "رأس المال المدفوع", "EQUITY", "CREDIT", "310000", True),
+        ("310200", "الاحتياطي القانوني", "EQUITY", "CREDIT", "310000", True),
+        ("310300", "احتياطيات أخرى", "EQUITY", "CREDIT", "310000", True),
+        ("320000", "الأرباح والخسائر المرحلة", "EQUITY", "CREDIT", "300000", False),
+        ("320100", "أرباح محتجزة", "EQUITY", "CREDIT", "320000", True),
+        ("320200", "نتيجة الفترة الحالية", "EQUITY", "CREDIT", "320000", True),
+        # Revenues
+        ("410000", "إيرادات النشاط", "REVENUE", "CREDIT", "400000", False),
+        ("410100", "إيرادات الغرف والإقامة", "REVENUE", "CREDIT", "410000", True),
+        ("410200", "إيرادات الأغذية والمشروبات", "REVENUE", "CREDIT", "410000", True),
+        ("410300", "إيرادات التطوير والمقاولات", "REVENUE", "CREDIT", "410000", True),
+        ("410400", "إيرادات الإدارة والخدمات", "REVENUE", "CREDIT", "410000", True),
+        ("420000", "إيرادات أخرى", "REVENUE", "CREDIT", "400000", False),
+        ("420100", "إيرادات فوائد", "REVENUE", "CREDIT", "420000", True),
+        ("420200", "أرباح بيع أصول", "REVENUE", "CREDIT", "420000", True),
+        ("420300", "أرباح فروق عملة", "REVENUE", "CREDIT", "420000", True),
+        # Expenses
+        ("510000", "تكلفة الإيرادات", "EXPENSE", "DEBIT", "500000", False),
+        ("510100", "تكلفة تشغيل الفنادق", "EXPENSE", "DEBIT", "510000", True),
+        ("510200", "تكلفة التطوير والمقاولات", "EXPENSE", "DEBIT", "510000", True),
+        ("510300", "تكلفة العمالة المباشرة", "EXPENSE", "DEBIT", "510000", True),
+        ("530000", "مصروفات التشغيل", "EXPENSE", "DEBIT", "500000", False),
+        ("530100", "الرواتب والأجور", "EXPENSE", "DEBIT", "530000", False),
+        ("530110", "رواتب أساسية", "EXPENSE", "DEBIT", "530100", True),
+        ("530120", "حوافز وبدلات", "EXPENSE", "DEBIT", "530100", True),
+        ("530130", "تأمينات ومزايا العاملين", "EXPENSE", "DEBIT", "530100", True),
+        ("530200", "المرافق والطاقة", "EXPENSE", "DEBIT", "530000", False),
+        ("530210", "كهرباء", "EXPENSE", "DEBIT", "530200", True),
+        ("530220", "مياه", "EXPENSE", "DEBIT", "530200", True),
+        ("530230", "غاز ووقود", "EXPENSE", "DEBIT", "530200", True),
+        ("530300", "الصيانة والإصلاح", "EXPENSE", "DEBIT", "530000", False),
+        ("530310", "صيانة مبانٍ", "EXPENSE", "DEBIT", "530300", True),
+        ("530320", "صيانة معدات", "EXPENSE", "DEBIT", "530300", True),
+        ("530330", "قطع غيار", "EXPENSE", "DEBIT", "530300", True),
+        ("540000", "المصروفات العمومية والإدارية", "EXPENSE", "DEBIT", "500000", False),
+        ("540100", "إيجارات", "EXPENSE", "DEBIT", "540000", True),
+        ("540200", "اتصالات وإنترنت", "EXPENSE", "DEBIT", "540000", True),
+        ("540300", "أتعاب مهنية واستشارية", "EXPENSE", "DEBIT", "540000", True),
+        ("540400", "تسويق وإعلان", "EXPENSE", "DEBIT", "540000", True),
+        ("540500", "انتقالات وسفر", "EXPENSE", "DEBIT", "540000", True),
+        ("540600", "أدوات مكتبية ومطبوعات", "EXPENSE", "DEBIT", "540000", True),
+        ("550000", "تكاليف التمويل", "EXPENSE", "DEBIT", "500000", False),
+        ("550100", "فوائد قروض", "EXPENSE", "DEBIT", "550000", True),
+        ("550200", "عمولات ومصروفات بنكية", "EXPENSE", "DEBIT", "550000", True),
+        ("550300", "خسائر فروق عملة", "EXPENSE", "DEBIT", "550000", True),
+        ("560000", "الإهلاك والإطفاء", "EXPENSE", "DEBIT", "500000", False),
+        ("560100", "مصروف إهلاك الأصول الثابتة", "EXPENSE", "DEBIT", "560000", True),
+        ("560200", "مصروف إطفاء الأصول غير الملموسة", "EXPENSE", "DEBIT", "560000", True),
+    ]
+    existing = {r["account_code"]: r["group_account_id"] for r in conn.execute(
+        "SELECT group_account_id, account_code FROM erp.group_accounts WHERE group_id=%s", (group_id,)
+    ).fetchall()}
+    inserted = 0
+    # Multiple passes allow parents defined in the same list.
+    for code, name, cls, normal, parent_code, postable in chart:
+        was_new = code not in existing
+        parent_id = existing.get(parent_code) if parent_code else None
+        row = conn.execute(
+            """
+            INSERT INTO erp.group_accounts
+                (group_id, account_code, account_name, account_class, normal_balance,
+                 parent_group_account_id, is_postable, is_intercompany, intercompany_role, is_active)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,FALSE,'NONE',TRUE)
+            ON CONFLICT (group_id, account_code) DO UPDATE
+              SET account_name=EXCLUDED.account_name,
+                  parent_group_account_id=COALESCE(erp.group_accounts.parent_group_account_id, EXCLUDED.parent_group_account_id),
+                  is_active=TRUE
+            RETURNING group_account_id
+            """,
+            (group_id, code, name, cls, normal, parent_id, postable),
+        ).fetchone()
+        existing[code] = row["group_account_id"]
+        if was_new:
+            inserted += 1
+    return inserted
+
+
+def sync_company_accounts_for_group(conn: Connection, group_id: UUID) -> int:
+    result = conn.execute(
+        """
+        INSERT INTO erp.accounts
+            (group_id, company_id, group_account_id, local_account_code, local_account_name)
+        SELECT ga.group_id, c.company_id, ga.group_account_id, ga.account_code, ga.account_name
+        FROM erp.group_accounts ga
+        CROSS JOIN erp.companies c
+        WHERE ga.group_id=%s AND c.group_id=ga.group_id
+          AND ga.is_active=TRUE AND ga.is_postable=TRUE AND c.is_active=TRUE
+        ON CONFLICT (company_id, local_account_code) DO NOTHING
+        """,
+        (group_id,),
+    )
+    return result.rowcount or 0
+
+
 def seed_cairo_group(conn: Connection, group_id: UUID) -> None:
     holding = conn.execute(
         """
@@ -375,7 +550,7 @@ def seed_cairo_group(conn: Connection, group_id: UUID) -> None:
              ownership_percent, functional_currency)
         VALUES (%s,'HOLD','Cairo Group Holding','Cairo Group Holding','HOLDING',100,'EGP')
         ON CONFLICT (group_id, company_code) DO UPDATE
-          SET company_name=EXCLUDED.company_name, legal_name=EXCLUDED.legal_name, is_active=TRUE
+          SET is_active=TRUE
         RETURNING company_id
         """,
         (group_id,),
@@ -394,8 +569,7 @@ def seed_cairo_group(conn: Connection, group_id: UUID) -> None:
                  parent_company_id, ownership_percent, functional_currency)
             VALUES (%s,%s,%s,%s,%s,%s,100,'EGP')
             ON CONFLICT (group_id, company_code) DO UPDATE
-              SET company_name=EXCLUDED.company_name, legal_name=EXCLUDED.legal_name,
-                  parent_company_id=EXCLUDED.parent_company_id, is_active=TRUE
+              SET parent_company_id=EXCLUDED.parent_company_id, is_active=TRUE
             """,
             (group_id, code, name, name, kind, holding["company_id"]),
         )
@@ -476,12 +650,13 @@ def migrate_and_seed() -> None:
                 (group_code, group_name, presentation_currency, country_code, fiscal_year_start_month)
             VALUES (%s,%s,'EGP','EG',1)
             ON CONFLICT (group_code) DO UPDATE
-              SET group_name=EXCLUDED.group_name, presentation_currency='EGP', country_code='EG', fiscal_year_start_month=1
+              SET presentation_currency='EGP', country_code='EG', fiscal_year_start_month=1
             RETURNING group_id
             """,
             (group_code, group_name),
         ).fetchone()
         seed_default_chart(conn, group["group_id"])
+        seed_professional_chart(conn, group["group_id"])
         seed_cairo_group(conn, group["group_id"])
 
         existing = conn.execute(
@@ -524,8 +699,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Cairo Group Holding ERP",
-    version="0.5.1",
-    description="Multi-company cloud accounting with opening balances, draft voucher workflow, permissions, currencies and print-ready documents",
+    version="0.6.0",
+    description="Multi-company cloud accounting with professional chart, editable users and companies, filtered journal reports, Excel export and print/PDF preview",
     lifespan=lifespan,
 )
 
@@ -559,6 +734,20 @@ class CompanyCreate(BaseModel):
     functional_currency: str = Field(default="EGP", min_length=3, max_length=3)
 
 
+class CompanyUpdate(BaseModel):
+    company_code: str | None = Field(default=None, min_length=1, max_length=30)
+    company_name: str | None = Field(default=None, min_length=1, max_length=250)
+    legal_name: str | None = Field(default=None, min_length=1, max_length=250)
+    parent_company_id: UUID | None = None
+    ownership_percent: Decimal | None = Field(default=None, gt=0, le=100)
+    functional_currency: str | None = Field(default=None, min_length=3, max_length=3)
+    is_active: bool | None = None
+
+
+class GroupProfileUpdate(BaseModel):
+    group_name: str = Field(min_length=2, max_length=250)
+
+
 class GroupAccountCreate(BaseModel):
     account_code: str = Field(min_length=1, max_length=50)
     account_name: str = Field(min_length=1, max_length=250)
@@ -568,6 +757,16 @@ class GroupAccountCreate(BaseModel):
     is_postable: bool = True
     is_intercompany: bool = False
     intercompany_role: str = "NONE"
+
+
+class GroupAccountUpdate(BaseModel):
+    account_code: str | None = Field(default=None, min_length=1, max_length=50)
+    account_name: str | None = Field(default=None, min_length=1, max_length=250)
+    account_class: Literal["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"] | None = None
+    normal_balance: Literal["DEBIT", "CREDIT"] | None = None
+    parent_group_account_id: UUID | None = None
+    is_postable: bool | None = None
+    is_active: bool | None = None
 
 
 class CompanyAccountCreate(BaseModel):
@@ -763,6 +962,16 @@ class UserCreate(BaseModel):
     permissions: list[str] = Field(default_factory=list)
 
 
+class UserUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=2, max_length=250)
+    email: EmailStr | None = None
+    password: str | None = Field(default=None, min_length=12)
+    role_code: Literal["GROUP_ADMIN", "FINANCE_MANAGER", "ACCOUNTANT", "REVIEWER", "VIEWER"] | None = None
+    company_id: UUID | None = None
+    permissions: list[str] | None = None
+    is_active: bool | None = None
+
+
 def get_current_user(authorization: Annotated[str | None, Header()] = None) -> dict[str, Any]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
@@ -808,7 +1017,17 @@ def home() -> FileResponse:
 def health() -> dict[str, str]:
     with pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok", "version": "0.5.1"}
+    return {"status": "ok", "version": "0.6.0"}
+
+
+@app.get("/api/system-info")
+def system_info() -> dict[str, Any]:
+    with pool.connection() as conn:
+        row = conn.execute(
+            """SELECT group_id, group_code, group_name, presentation_currency
+               FROM erp.corporate_groups WHERE is_active=TRUE ORDER BY created_at LIMIT 1"""
+        ).fetchone()
+    return row or {"group_name": "Holding ERP", "presentation_currency": "EGP"}
 
 
 @app.post("/api/auth/login")
@@ -832,9 +1051,16 @@ def login(data: LoginRequest) -> dict[str, Any]:
 
 @app.get("/api/me")
 def me(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    with pool.connection() as conn:
+        group = conn.execute(
+            "SELECT group_code, group_name, presentation_currency FROM erp.corporate_groups WHERE group_id=%s",
+            (user["group_id"],),
+        ).fetchone() or {}
     return {
         "user_id": str(user["user_id"]), "email": user["email"],
         "group_id": str(user["group_id"]),
+        "group_code": group.get("group_code"), "group_name": group.get("group_name"),
+        "presentation_currency": group.get("presentation_currency", "EGP"),
         "company_id": str(user["company_id"]) if user["company_id"] else None,
         "is_group_admin": user["is_group_admin"], "role_code": user.get("role_code"),
         "permissions": sorted(effective_permissions(user)),
@@ -879,14 +1105,14 @@ def list_companies(user: Annotated[dict[str, Any], Depends(get_current_user)]) -
     with pool.connection() as conn:
         if user["is_group_admin"]:
             return conn.execute(
-                """SELECT company_id, company_code, company_name, company_kind,
-                          parent_company_id, ownership_percent, functional_currency
+                """SELECT company_id, company_code, company_name, legal_name, company_kind,
+                          parent_company_id, ownership_percent, functional_currency, is_active
                    FROM erp.companies WHERE group_id=%s AND is_active=TRUE ORDER BY company_code""",
                 (user["group_id"],),
             ).fetchall()
         return conn.execute(
-            """SELECT company_id, company_code, company_name, company_kind,
-                      parent_company_id, ownership_percent, functional_currency
+            """SELECT company_id, company_code, company_name, legal_name, company_kind,
+                      parent_company_id, ownership_percent, functional_currency, is_active
                FROM erp.companies WHERE group_id=%s AND company_id=%s AND is_active=TRUE""",
             (user["group_id"], user["company_id"]),
         ).fetchall()
@@ -911,6 +1137,59 @@ def create_company(data: CompanyCreate, user: Annotated[dict[str, Any], Depends(
         ).fetchone()
         audit(conn, user, "CREATE", "COMPANY", row["company_id"], row["company_id"])
         conn.commit()
+    return row
+
+
+@app.patch("/api/group-profile")
+def update_group_profile(data: GroupProfileUpdate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_group_admin(user)
+    with pool.connection() as conn:
+        row = conn.execute(
+            """UPDATE erp.corporate_groups SET group_name=%s
+               WHERE group_id=%s RETURNING group_id, group_code, group_name, presentation_currency""",
+            (data.group_name.strip(), user["group_id"]),
+        ).fetchone()
+        audit(conn, user, "UPDATE", "GROUP", user["group_id"], details={"group_name": data.group_name})
+        conn.commit()
+    return row
+
+
+@app.patch("/api/companies/{company_id}")
+def update_company(company_id: UUID, data: CompanyUpdate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_group_admin(user)
+    values = data.model_dump(exclude_unset=True)
+    if not values:
+        raise HTTPException(status_code=422, detail="لا توجد تعديلات")
+    with pool.connection() as conn:
+        current = conn.execute(
+            "SELECT * FROM erp.companies WHERE company_id=%s AND group_id=%s",
+            (company_id, user["group_id"]),
+        ).fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="الشركة غير موجودة")
+        if current["company_kind"] == "HOLDING":
+            values["parent_company_id"] = None
+        elif "parent_company_id" in values and values["parent_company_id"] is None:
+            raise HTTPException(status_code=422, detail="الشركة التابعة تحتاج شركة أم")
+        if values.get("parent_company_id") == company_id:
+            raise HTTPException(status_code=422, detail="لا يمكن أن تكون الشركة هي الشركة الأم لنفسها")
+        if values.get("functional_currency"):
+            values["functional_currency"] = values["functional_currency"].upper()
+        columns=[]; params=[]
+        for key, value in values.items():
+            columns.append(f"{key}=%s")
+            params.append(value)
+        params.extend([company_id, user["group_id"]])
+        try:
+            row = conn.execute(
+                f"UPDATE erp.companies SET {', '.join(columns)} WHERE company_id=%s AND group_id=%s RETURNING *",
+                params,
+            ).fetchone()
+            audit(conn, user, "UPDATE", "COMPANY", company_id, company_id, values)
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            raise HTTPException(status_code=400, detail=f"تعذر تعديل الشركة: {exc}") from exc
     return row
 
 
@@ -989,6 +1268,113 @@ def create_group_account(data: GroupAccountCreate, user: Annotated[dict[str, Any
         })
         conn.commit()
     return row
+
+
+@app.patch("/api/group-accounts/{group_account_id}")
+def update_group_account(group_account_id: UUID, data: GroupAccountUpdate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user, "ACCOUNT_MANAGE")
+    values = data.model_dump(exclude_unset=True)
+    if not values:
+        raise HTTPException(status_code=422, detail="لا توجد تعديلات")
+    with pool.connection() as conn:
+        current = conn.execute(
+            "SELECT * FROM erp.group_accounts WHERE group_account_id=%s AND group_id=%s",
+            (group_account_id, user["group_id"]),
+        ).fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="الحساب غير موجود")
+        parent_id = values.get("parent_group_account_id")
+        if parent_id == group_account_id:
+            raise HTTPException(status_code=422, detail="لا يمكن أن يكون الحساب رئيسياً لنفسه")
+        if parent_id:
+            parent = conn.execute(
+                "SELECT group_account_id, account_class, is_postable FROM erp.group_accounts WHERE group_account_id=%s AND group_id=%s AND is_active=TRUE",
+                (parent_id, user["group_id"]),
+            ).fetchone()
+            if not parent:
+                raise HTTPException(status_code=422, detail="الحساب الرئيسي غير موجود")
+            target_class = values.get("account_class", current["account_class"])
+            if parent["account_class"] != target_class:
+                raise HTTPException(status_code=422, detail="الحساب الفرعي يجب أن يكون من نفس تصنيف الحساب الرئيسي")
+            if parent["is_postable"]:
+                parent_mapped = conn.execute(
+                    "SELECT 1 FROM erp.accounts WHERE group_account_id=%s AND is_active=TRUE LIMIT 1", (parent_id,)
+                ).fetchone()
+                if parent_mapped:
+                    raise HTTPException(status_code=422, detail="الحساب الرئيسي المختار حساب حركة مستخدم؛ اختر حساباً تجميعياً")
+            cycle = conn.execute(
+                """WITH RECURSIVE descendants AS (
+                       SELECT group_account_id FROM erp.group_accounts
+                        WHERE parent_group_account_id=%s AND group_id=%s
+                       UNION ALL
+                       SELECT ga.group_account_id FROM erp.group_accounts ga
+                       JOIN descendants d ON ga.parent_group_account_id=d.group_account_id
+                       WHERE ga.group_id=%s
+                   ) SELECT 1 FROM descendants WHERE group_account_id=%s""",
+                (group_account_id, user["group_id"], user["group_id"], parent_id),
+            ).fetchone()
+            if cycle:
+                raise HTTPException(status_code=422, detail="اختيار الحساب الرئيسي سيؤدي إلى دائرة في الشجرة")
+        if values.get("is_postable") is True:
+            child = conn.execute(
+                "SELECT 1 FROM erp.group_accounts WHERE parent_group_account_id=%s AND is_active=TRUE LIMIT 1",
+                (group_account_id,),
+            ).fetchone()
+            if child:
+                raise HTTPException(status_code=422, detail="الحساب الذي تحته فروع لا يمكن تحويله إلى حساب حركة")
+        if current["is_postable"] and values.get("is_postable") is False:
+            mapped = conn.execute(
+                "SELECT 1 FROM erp.accounts WHERE group_account_id=%s AND is_active=TRUE LIMIT 1", (group_account_id,)
+            ).fetchone()
+            if mapped:
+                raise HTTPException(status_code=422, detail="لا يمكن تحويل حساب حركة مرتبط بالشركات إلى حساب رئيسي. أنشئ حساباً رئيسياً جديداً وانقل الحسابات الجديدة تحته")
+        if values.get("account_class") and values["account_class"] != current["account_class"]:
+            used = conn.execute(
+                """SELECT 1 FROM erp.journal_entries e JOIN erp.accounts a ON a.account_id=e.account_id
+                   WHERE a.group_account_id=%s LIMIT 1""", (group_account_id,)
+            ).fetchone()
+            if used:
+                raise HTTPException(status_code=422, detail="لا يمكن تغيير تصنيف حساب له حركات مالية")
+        columns=[]; params=[]
+        for key,value in values.items():
+            columns.append(f"{key}=%s"); params.append(value)
+        params.extend([group_account_id,user["group_id"]])
+        try:
+            row=conn.execute(
+                f"UPDATE erp.group_accounts SET {', '.join(columns)} WHERE group_account_id=%s AND group_id=%s RETURNING *",
+                params,
+            ).fetchone()
+            audit(conn,user,"UPDATE","GROUP_ACCOUNT",group_account_id,details=values)
+            conn.commit()
+        except Exception as exc:
+            conn.rollback(); raise HTTPException(status_code=400,detail=f"تعذر تعديل الحساب: {exc}") from exc
+    return row
+
+
+@app.delete("/api/group-accounts/{group_account_id}")
+def deactivate_group_account(group_account_id: UUID, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user,"ACCOUNT_MANAGE")
+    with pool.connection() as conn:
+        child=conn.execute("SELECT 1 FROM erp.group_accounts WHERE parent_group_account_id=%s AND is_active=TRUE LIMIT 1",(group_account_id,)).fetchone()
+        mapped=conn.execute("SELECT 1 FROM erp.accounts WHERE group_account_id=%s AND is_active=TRUE LIMIT 1",(group_account_id,)).fetchone()
+        if child or mapped:
+            raise HTTPException(status_code=422,detail="لا يمكن حذف الحساب لوجود حسابات فرعية أو حسابات شركات مرتبطة به. يمكن تعديل اسمه أو إيقاف الحسابات المرتبطة أولاً.")
+        row=conn.execute("UPDATE erp.group_accounts SET is_active=FALSE WHERE group_account_id=%s AND group_id=%s RETURNING group_account_id",(group_account_id,user["group_id"])).fetchone()
+        if not row: raise HTTPException(status_code=404,detail="الحساب غير موجود")
+        audit(conn,user,"DEACTIVATE","GROUP_ACCOUNT",group_account_id)
+        conn.commit()
+    return {"message":"تم إيقاف الحساب"}
+
+
+@app.post("/api/group-accounts/apply-professional-template")
+def apply_professional_template(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_permission(user,"ACCOUNT_MANAGE")
+    with pool.connection() as conn:
+        added=seed_professional_chart(conn,user["group_id"])
+        mapped=sync_company_accounts_for_group(conn,user["group_id"])
+        audit(conn,user,"APPLY_TEMPLATE","GROUP_ACCOUNT",details={"accounts_added":added,"company_accounts_added":mapped})
+        conn.commit()
+    return {"message":"تم تطبيق نموذج شجرة الحسابات التفصيلي","accounts_added":added,"company_accounts_added":mapped}
 
 
 @app.get("/api/accounts")
@@ -2009,6 +2395,96 @@ def create_user(data: UserCreate, user: Annotated[dict[str, Any], Depends(get_cu
         audit(conn, user, "CREATE", "USER", row["user_id"], data.company_id, {"role": data.role_code})
         conn.commit()
     return row
+
+
+@app.patch("/api/users/{user_id}")
+def update_user(user_id: UUID, data: UserUpdate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_group_admin(user)
+    values=data.model_dump(exclude_unset=True)
+    if not values: raise HTTPException(status_code=422,detail="لا توجد تعديلات")
+    with pool.connection() as conn:
+        target=conn.execute("SELECT * FROM erp.app_users WHERE user_id=%s AND group_id=%s",(user_id,user["group_id"])).fetchone()
+        if not target: raise HTTPException(status_code=404,detail="المستخدم غير موجود")
+        if target["is_group_admin"] and values.get("role_code") not in (None,"GROUP_ADMIN"):
+            raise HTTPException(status_code=422,detail="لا يمكن تحويل مدير المجموعة إلى دور شركة من هذه الشاشة")
+        if user_id == user["user_id"] and values.get("is_active") is False:
+            raise HTTPException(status_code=422,detail="لا يمكنك إيقاف المستخدم الذي سجلت الدخول به")
+        if target["is_group_admin"] and values.get("is_active") is False:
+            admins=conn.execute("SELECT COUNT(*) AS n FROM erp.app_users WHERE group_id=%s AND is_group_admin=TRUE AND is_active=TRUE",(user["group_id"],)).fetchone()["n"]
+            if admins<=1:
+                raise HTTPException(status_code=422,detail="لا يمكن إيقاف آخر مدير نشط للمجموعة")
+        if not target["is_group_admin"] and values.get("company_id") is None and "company_id" in values:
+            raise HTTPException(status_code=422,detail="حدد شركة للمستخدم")
+        if values.get("company_id"):
+            exists=conn.execute("SELECT 1 FROM erp.companies WHERE company_id=%s AND group_id=%s",(values["company_id"],user["group_id"])).fetchone()
+            if not exists: raise HTTPException(status_code=422,detail="الشركة غير موجودة")
+        if "password" in values:
+            values["password_hash"]=hash_password(values.pop("password"))
+        if "email" in values: values["email"]=str(values["email"]).lower()
+        if "permissions" in values: values["permissions"]=json.dumps(values["permissions"])
+        columns=[];params=[]
+        for key,value in values.items():
+            if key=="permissions": columns.append("permissions=%s::jsonb")
+            else: columns.append(f"{key}=%s")
+            params.append(value)
+        params.extend([user_id,user["group_id"]])
+        try:
+            row=conn.execute(f"UPDATE erp.app_users SET {', '.join(columns)} WHERE user_id=%s AND group_id=%s RETURNING user_id,full_name,email,role_code,company_id,permissions,is_active,is_group_admin",params).fetchone()
+            audit(conn,user,"UPDATE","USER",user_id,row.get("company_id"),{k:v for k,v in values.items() if k!="password_hash"})
+            conn.commit()
+        except Exception as exc:
+            conn.rollback(); raise HTTPException(status_code=400,detail=f"تعذر تعديل المستخدم: {exc}") from exc
+    return row
+
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: UUID, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_group_admin(user)
+    if user_id==user["user_id"]:
+        raise HTTPException(status_code=422,detail="لا يمكنك حذف المستخدم الذي سجلت الدخول به")
+    with pool.connection() as conn:
+        target=conn.execute("SELECT user_id,is_group_admin,company_id FROM erp.app_users WHERE user_id=%s AND group_id=%s",(user_id,user["group_id"])).fetchone()
+        if not target: raise HTTPException(status_code=404,detail="المستخدم غير موجود")
+        if target["is_group_admin"]:
+            admins=conn.execute("SELECT COUNT(*) AS n FROM erp.app_users WHERE group_id=%s AND is_group_admin=TRUE AND is_active=TRUE",(user["group_id"],)).fetchone()["n"]
+            if admins<=1: raise HTTPException(status_code=422,detail="لا يمكن حذف آخر مدير نشط للمجموعة")
+        conn.execute("UPDATE erp.app_users SET is_active=FALSE WHERE user_id=%s",(user_id,))
+        audit(conn,user,"DEACTIVATE","USER",user_id,target.get("company_id"))
+        conn.commit()
+    return {"message":"تم حذف المستخدم من الاستخدام مع الاحتفاظ بسجل التدقيق"}
+
+
+@app.get("/api/journal-register")
+def journal_register(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    company_id: UUID,
+    date_from: date,
+    date_to: date,
+    account_id: UUID | None = None,
+    voucher_status: Literal["POSTED","DRAFT","ALL"] = "POSTED",
+) -> list[dict[str, Any]]:
+    require_permission(user,"REPORT_VIEW")
+    ensure_company_access(user,company_id)
+    if date_from>date_to: raise HTTPException(status_code=422,detail="تاريخ البداية أكبر من تاريخ النهاية")
+    with pool.connection() as conn:
+        return conn.execute(
+            """SELECT v.voucher_id,v.voucher_no,v.voucher_type,v.status,v.document_date,v.posting_date,
+                      v.description AS voucher_description,v.created_at,v.posted_at,
+                      COALESCE(u.full_name,u.email,'—') AS created_by_name,
+                      e.line_no,e.entry_description,a.account_id,a.local_account_code AS account_code,
+                      a.local_account_name AS account_name,e.debit_amount,e.credit_amount,
+                      e.currency,e.exchange_rate,e.foreign_debit,e.foreign_credit
+               FROM erp.journal_vouchers v
+               JOIN erp.journal_entries e ON e.voucher_id=v.voucher_id AND e.company_id=v.company_id AND e.group_id=v.group_id
+               JOIN erp.accounts a ON a.account_id=e.account_id AND a.company_id=e.company_id AND a.group_id=e.group_id
+               LEFT JOIN erp.app_users u ON u.user_id=v.created_by
+               WHERE v.group_id=%s AND v.company_id=%s
+                 AND v.posting_date BETWEEN %s AND %s
+                 AND (%s='ALL' OR v.status=%s)
+                 AND (%s::uuid IS NULL OR e.account_id=%s::uuid)
+               ORDER BY v.posting_date,v.voucher_no,e.line_no""",
+            (user["group_id"],company_id,date_from,date_to,voucher_status,voucher_status,account_id,account_id),
+        ).fetchall()
 
 
 @app.get("/api/trial-balance")
