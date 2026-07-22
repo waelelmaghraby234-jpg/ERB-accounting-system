@@ -26,6 +26,8 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 AUTO_MIGRATE = os.environ.get("AUTO_MIGRATE", "true").lower() == "true"
 SYNC_ADMIN_CREDENTIALS = os.environ.get("SYNC_ADMIN_CREDENTIALS", "true").lower() == "true"
+ALLOW_COMPANY_RESET = os.environ.get("ALLOW_COMPANY_RESET", "false").lower() == "true"
+ALLOW_TEST_UNPOST = os.environ.get("ALLOW_TEST_UNPOST", "false").lower() == "true"
 ALGORITHM = "HS256"
 MONEY = Decimal("0.0001")
 
@@ -33,6 +35,7 @@ ALL_PERMISSIONS = {
     "ACCOUNT_MANAGE", "CURRENCY_MANAGE", "VOUCHER_CREATE", "VOUCHER_EDIT",
     "VOUCHER_DELETE", "VOUCHER_POST", "OPENING_BALANCE_CREATE", "REPORT_VIEW",
     "PARTY_MANAGE", "BANK_MANAGE", "ASSET_MANAGE", "USER_MANAGE",
+    "VOUCHER_REVERSE", "VOUCHER_UNPOST_TEST", "COMPANY_RESET",
 }
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "GROUP_ADMIN": set(ALL_PERMISSIONS),
@@ -42,7 +45,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "OPENING_BALANCE_CREATE", "REPORT_VIEW", "PARTY_MANAGE",
         "BANK_MANAGE", "ASSET_MANAGE",
     },
-    "REVIEWER": {"VOUCHER_POST", "REPORT_VIEW"},
+    "REVIEWER": {"VOUCHER_POST", "REPORT_VIEW", "VOUCHER_REVERSE"},
     "VIEWER": {"REPORT_VIEW"},
 }
 
@@ -263,6 +266,9 @@ def create_voucher_db(
     external_reference: str | None = None,
     post_immediately: bool = True,
     voucher_type: str = "GENERAL",
+    reversal_of_voucher_id: UUID | None = None,
+    correction_of_voucher_id: UUID | None = None,
+    action_reason: str | None = None,
 ) -> dict[str, Any]:
     debit = money(sum(money(e.get("debit_amount", 0)) for e in entries))
     credit = money(sum(money(e.get("credit_amount", 0)) for e in entries))
@@ -276,13 +282,15 @@ def create_voucher_db(
         INSERT INTO erp.journal_vouchers
             (group_id, company_id, voucher_no, voucher_type, status,
              document_date, posting_date, description, source_module,
-             external_reference, created_by, updated_by)
-        VALUES (%s,%s,%s,%s,'DRAFT',%s,%s,%s,%s,%s,%s,%s)
+             external_reference, created_by, updated_by, reversal_of_voucher_id,
+             correction_of_voucher_id, action_reason)
+        VALUES (%s,%s,%s,%s,'DRAFT',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING voucher_id, voucher_no, voucher_type, status, posting_date
         """,
         (
             user["group_id"], company_id, voucher_no, voucher_type, document_date, posting_date,
             description, source_module, external_reference, user["user_id"], user["user_id"],
+            reversal_of_voucher_id, correction_of_voucher_id, action_reason,
         ),
     ).fetchone()
     _insert_voucher_entries(
@@ -657,6 +665,8 @@ def migrate_and_seed() -> None:
         ).fetchone()
         seed_default_chart(conn, group["group_id"])
         seed_professional_chart(conn, group["group_id"])
+        if AUTO_MIGRATE:
+            conn.execute("SELECT erp.refresh_ifrs_account_mapping(%s)", (group["group_id"],))
         seed_cairo_group(conn, group["group_id"])
 
         existing = conn.execute(
@@ -699,8 +709,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Cairo Group Holding ERP",
-    version="0.6.0",
-    description="Multi-company cloud accounting with professional chart, editable users and companies, filtered journal reports, Excel export and print/PDF preview",
+    version="0.7.0",
+    description="Multi-company accounting with safe posted-voucher corrections, test reset controls and IFRS-oriented reports",
     lifespan=lifespan,
 )
 
@@ -807,6 +817,17 @@ class VoucherUpdate(BaseModel):
     posting_date: date
     description: str | None = None
     entries: list[VoucherEntryCreate] = Field(min_length=1)
+
+
+class VoucherActionRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+    action_date: date = Field(default_factory=date.today)
+
+
+class CompanyResetRequest(BaseModel):
+    mode: Literal["FINANCIAL_ONLY", "FULL_PRESERVE_CHART"] = "FULL_PRESERVE_CHART"
+    confirmation_text: str = Field(min_length=3, max_length=100)
+    reason: str = Field(min_length=5, max_length=500)
 
 
 class OpeningBalanceCreate(BaseModel):
@@ -1017,7 +1038,7 @@ def home() -> FileResponse:
 def health() -> dict[str, str]:
     with pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok", "version": "0.6.0"}
+    return {"status": "ok", "version": "0.7.0"}
 
 
 @app.get("/api/system-info")
@@ -1028,6 +1049,20 @@ def system_info() -> dict[str, Any]:
                FROM erp.corporate_groups WHERE is_active=TRUE ORDER BY created_at LIMIT 1"""
         ).fetchone()
     return row or {"group_name": "Holding ERP", "presentation_currency": "EGP"}
+
+
+@app.get("/api/system-settings")
+def system_settings(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    with pool.connection() as conn:
+        row = conn.execute(
+            "SELECT financial_statement_standard FROM erp.corporate_groups WHERE group_id=%s",
+            (user["group_id"],),
+        ).fetchone()
+    return {
+        "allow_company_reset": ALLOW_COMPANY_RESET and bool(user.get("is_group_admin")),
+        "allow_test_unpost": ALLOW_TEST_UNPOST and bool(user.get("is_group_admin")),
+        "financial_statement_standard": (row or {}).get("financial_statement_standard", "IAS1_2026"),
+    }
 
 
 @app.post("/api/auth/login")
@@ -1639,6 +1674,9 @@ def list_vouchers(user: Annotated[dict[str, Any], Depends(get_current_user)], co
         return conn.execute(
             """SELECT voucher_id, voucher_no, voucher_type, status, document_date, posting_date,
                       description, source_module, external_reference, created_at, posted_at,
+                      reversal_of_voucher_id, correction_of_voucher_id, action_reason,
+                      EXISTS(SELECT 1 FROM erp.journal_vouchers rv WHERE rv.reversal_of_voucher_id=v.voucher_id) AS is_reversed,
+                      (SELECT rv.voucher_id FROM erp.journal_vouchers rv WHERE rv.reversal_of_voucher_id=v.voucher_id LIMIT 1) AS reversal_voucher_id,
                       (SELECT COALESCE(SUM(debit_amount),0) FROM erp.journal_entries e WHERE e.voucher_id=v.voucher_id) AS amount
                FROM erp.journal_vouchers v
                WHERE group_id=%s AND company_id=%s ORDER BY posting_date DESC, created_at DESC LIMIT %s""",
@@ -1764,6 +1802,277 @@ def post_voucher(voucher_id: UUID, user: Annotated[dict[str, Any], Depends(get_c
             conn.execute("SELECT erp.post_voucher(%s,%s)", (voucher_id, user["user_id"]))
             audit(conn, user, "POST", "VOUCHER", voucher_id, voucher["company_id"])
             return {"voucher_id": voucher_id, "status": "POSTED"}
+
+
+def _voucher_entries_for_copy(conn: Connection, voucher_id: UUID, *, reverse: bool) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """SELECT account_id, entry_description, debit_amount, credit_amount,
+                  currency, exchange_rate, foreign_debit, foreign_credit,
+                  counterparty_company_id, intercompany_reference, branch_id, cost_center_id
+           FROM erp.journal_entries WHERE voucher_id=%s ORDER BY line_no""",
+        (voucher_id,),
+    ).fetchall()
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        entries.append({
+            "account_id": row["account_id"],
+            "description": row["entry_description"],
+            "debit_amount": row["credit_amount"] if reverse else row["debit_amount"],
+            "credit_amount": row["debit_amount"] if reverse else row["credit_amount"],
+            "currency": row["currency"],
+            "exchange_rate": row["exchange_rate"],
+            "foreign_debit": row["foreign_credit"] if reverse else row["foreign_debit"],
+            "foreign_credit": row["foreign_debit"] if reverse else row["foreign_credit"],
+            "counterparty_company_id": row["counterparty_company_id"],
+            "intercompany_reference": row["intercompany_reference"],
+            "branch_id": row["branch_id"],
+            "cost_center_id": row["cost_center_id"],
+        })
+    return entries
+
+
+def _unique_action_voucher_no(conn: Connection, company_id: UUID, prefix: str, source_no: str) -> str:
+    base = f"{prefix}-{source_no}"[:42]
+    candidate = f"{base}-{datetime.now(timezone.utc).strftime('%H%M%S')}"[:50]
+    counter = 1
+    while conn.execute(
+        "SELECT 1 FROM erp.journal_vouchers WHERE company_id=%s AND voucher_no=%s", (company_id, candidate)
+    ).fetchone():
+        candidate = f"{base}-{counter}"[:50]
+        counter += 1
+    return candidate
+
+
+def _create_reversal_db(
+    conn: Connection,
+    *,
+    user: dict[str, Any],
+    original: dict[str, Any],
+    action_date: date,
+    reason: str,
+) -> dict[str, Any]:
+    if original["status"] != "POSTED":
+        raise HTTPException(status_code=409, detail="يمكن عكس قيد مرحّل فقط")
+    if original.get("source_module") not in {"GL", "OPENING"}:
+        raise HTTPException(status_code=409, detail="القيد ناتج من فاتورة/بنك/أصل؛ يجب إلغاء المستند من وحدته وليس من اليومية")
+    existing = conn.execute(
+        "SELECT voucher_id,voucher_no FROM erp.journal_vouchers WHERE reversal_of_voucher_id=%s",
+        (original["voucher_id"],),
+    ).fetchone()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"القيد معكوس بالفعل بواسطة {existing['voucher_no']}")
+    entries = _voucher_entries_for_copy(conn, original["voucher_id"], reverse=True)
+    return create_voucher_db(
+        conn,
+        user=user,
+        company_id=original["company_id"],
+        voucher_no=_unique_action_voucher_no(conn, original["company_id"], "REV", original["voucher_no"]),
+        document_date=action_date,
+        posting_date=action_date,
+        description=f"عكس القيد {original['voucher_no']}: {reason}",
+        entries=entries,
+        source_module="GL",
+        external_reference=str(original["voucher_id"]),
+        post_immediately=True,
+        voucher_type="REVERSAL",
+        reversal_of_voucher_id=original["voucher_id"],
+        action_reason=reason,
+    )
+
+
+@app.post("/api/vouchers/{voucher_id}/reverse")
+def reverse_posted_voucher(
+    voucher_id: UUID,
+    data: VoucherActionRequest,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    require_permission(user, "VOUCHER_REVERSE")
+    with pool.connection() as conn:
+        with conn.transaction():
+            original = conn.execute(
+                "SELECT * FROM erp.journal_vouchers WHERE group_id=%s AND voucher_id=%s FOR UPDATE",
+                (user["group_id"], voucher_id),
+            ).fetchone()
+            if not original:
+                raise HTTPException(status_code=404, detail="القيد غير موجود")
+            ensure_company_access(user, original["company_id"])
+            ensure_open_period(conn, original["company_id"], data.action_date)
+            reversal = _create_reversal_db(conn, user=user, original=original, action_date=data.action_date, reason=data.reason)
+            audit(conn, user, "REVERSE", "VOUCHER", voucher_id, original["company_id"], {"reversal_voucher_id": reversal["voucher_id"], "reason": data.reason})
+            return {"message": "تم إنشاء وترحيل قيد العكس مع الاحتفاظ بالقيد الأصلي", "reversal": reversal}
+
+
+@app.post("/api/vouchers/{voucher_id}/correct")
+def correct_posted_voucher(
+    voucher_id: UUID,
+    data: VoucherActionRequest,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    require_permission(user, "VOUCHER_REVERSE")
+    require_permission(user, "VOUCHER_CREATE")
+    with pool.connection() as conn:
+        with conn.transaction():
+            original = conn.execute(
+                "SELECT * FROM erp.journal_vouchers WHERE group_id=%s AND voucher_id=%s FOR UPDATE",
+                (user["group_id"], voucher_id),
+            ).fetchone()
+            if not original:
+                raise HTTPException(status_code=404, detail="القيد غير موجود")
+            ensure_company_access(user, original["company_id"])
+            ensure_open_period(conn, original["company_id"], data.action_date)
+            reversal = _create_reversal_db(conn, user=user, original=original, action_date=data.action_date, reason=data.reason)
+            correction = create_voucher_db(
+                conn,
+                user=user,
+                company_id=original["company_id"],
+                voucher_no=_unique_action_voucher_no(conn, original["company_id"], "COR", original["voucher_no"]),
+                document_date=data.action_date,
+                posting_date=data.action_date,
+                description=f"تصحيح القيد {original['voucher_no']}: {data.reason}",
+                entries=_voucher_entries_for_copy(conn, original["voucher_id"], reverse=False),
+                source_module="GL",
+                external_reference=str(original["voucher_id"]),
+                post_immediately=False,
+                voucher_type="CORRECTION",
+                correction_of_voucher_id=original["voucher_id"],
+                action_reason=data.reason,
+            )
+            audit(conn, user, "CORRECT", "VOUCHER", voucher_id, original["company_id"], {"reversal_voucher_id": reversal["voucher_id"], "draft_voucher_id": correction["voucher_id"], "reason": data.reason})
+            return {"message": "تم عكس القيد وإنشاء نسخة تصحيح كمسودة قابلة للتعديل", "reversal": reversal, "draft": correction}
+
+
+@app.post("/api/vouchers/{voucher_id}/unpost-test")
+def unpost_voucher_for_testing(
+    voucher_id: UUID,
+    data: VoucherActionRequest,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    require_group_admin(user)
+    require_permission(user, "VOUCHER_UNPOST_TEST")
+    if not ALLOW_TEST_UNPOST:
+        raise HTTPException(status_code=403, detail="إرجاع القيد لمسودة معطل. فعّل ALLOW_TEST_UNPOST=true في Render أثناء الاختبار فقط")
+    with pool.connection() as conn:
+        with conn.transaction():
+            voucher = conn.execute(
+                "SELECT company_id,status,voucher_no FROM erp.journal_vouchers WHERE group_id=%s AND voucher_id=%s FOR UPDATE",
+                (user["group_id"], voucher_id),
+            ).fetchone()
+            if not voucher:
+                raise HTTPException(status_code=404, detail="القيد غير موجود")
+            ensure_company_access(user, voucher["company_id"])
+            conn.execute("SELECT erp.test_unpost_voucher(%s,%s)", (voucher_id, user["user_id"]))
+            audit(conn, user, "UNPOST_TEST", "VOUCHER", voucher_id, voucher["company_id"], {"reason": data.reason})
+            return {"message": "تم إرجاع القيد إلى مسودة للاختبار. لا تستخدم هذه العملية في التشغيل الفعلي"}
+
+
+@app.get("/api/companies/{company_id}/reset-preview")
+def company_reset_preview(
+    company_id: UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    require_group_admin(user)
+    require_permission(user, "COMPANY_RESET")
+    ensure_company_access(user, company_id)
+    with pool.connection() as conn:
+        company = conn.execute(
+            "SELECT company_code,company_name FROM erp.companies WHERE group_id=%s AND company_id=%s",
+            (user["group_id"], company_id),
+        ).fetchone()
+        if not company:
+            raise HTTPException(status_code=404, detail="الشركة غير موجودة")
+        counts = {
+            "vouchers": conn.execute("SELECT COUNT(*) AS n FROM erp.journal_vouchers WHERE company_id=%s", (company_id,)).fetchone()["n"],
+            "entries": conn.execute("SELECT COUNT(*) AS n FROM erp.journal_entries WHERE company_id=%s", (company_id,)).fetchone()["n"],
+            "opening_batches": conn.execute("SELECT COUNT(*) AS n FROM erp.opening_balance_batches WHERE company_id=%s", (company_id,)).fetchone()["n"],
+            "invoices": conn.execute("SELECT COUNT(*) AS n FROM erp.invoices WHERE company_id=%s", (company_id,)).fetchone()["n"],
+            "cash_transactions": conn.execute("SELECT COUNT(*) AS n FROM erp.cash_transactions WHERE company_id=%s", (company_id,)).fetchone()["n"],
+            "parties": conn.execute("SELECT COUNT(*) AS n FROM erp.parties WHERE company_id=%s", (company_id,)).fetchone()["n"],
+            "bank_accounts": conn.execute("SELECT COUNT(*) AS n FROM erp.bank_accounts WHERE company_id=%s", (company_id,)).fetchone()["n"],
+            "fixed_assets": conn.execute("SELECT COUNT(*) AS n FROM erp.fixed_assets WHERE company_id=%s", (company_id,)).fetchone()["n"],
+        }
+    return {
+        "company": company,
+        "counts": counts,
+        "confirmation_text": f"RESET {company['company_code']}",
+        "enabled": ALLOW_COMPANY_RESET,
+        "preserved": ["الشركة", "المستخدمون والصلاحيات", "دليل المجموعة", "حسابات الشركة", "سجل التدقيق"],
+    }
+
+
+def _company_reset_counts(conn: Connection, company_id: UUID) -> dict[str, int]:
+    tables = [
+        "journal_vouchers", "journal_entries", "opening_balance_batches", "invoices",
+        "invoice_lines", "cash_transactions", "parties", "bank_accounts", "fixed_assets",
+        "asset_categories", "asset_depreciation_entries", "bank_revaluations", "branches",
+        "cost_centers", "fiscal_years", "fiscal_periods", "exchange_rates",
+    ]
+    result: dict[str, int] = {}
+    for table in tables:
+        result[table] = int(conn.execute(f"SELECT COUNT(*) AS n FROM erp.{table} WHERE company_id=%s", (company_id,)).fetchone()["n"])
+    return result
+
+
+@app.post("/api/companies/{company_id}/reset-data")
+def reset_company_data(
+    company_id: UUID,
+    data: CompanyResetRequest,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    require_group_admin(user)
+    require_permission(user, "COMPANY_RESET")
+    if not ALLOW_COMPANY_RESET:
+        raise HTTPException(status_code=403, detail="تصفير الشركات معطل. فعّل ALLOW_COMPANY_RESET=true في Render أثناء التجربة فقط")
+    with pool.connection() as conn:
+        with conn.transaction():
+            company = conn.execute(
+                "SELECT company_code,company_name FROM erp.companies WHERE group_id=%s AND company_id=%s FOR UPDATE",
+                (user["group_id"], company_id),
+            ).fetchone()
+            if not company:
+                raise HTTPException(status_code=404, detail="الشركة غير موجودة")
+            expected = f"RESET {company['company_code']}"
+            if data.confirmation_text.strip() != expected:
+                raise HTTPException(status_code=422, detail=f"اكتب عبارة التأكيد كما هي: {expected}")
+            counts = _company_reset_counts(conn, company_id)
+            conn.execute("SELECT set_config('erp.company_reset','on',TRUE)")
+
+            # Remove source documents before their linked vouchers.
+            conn.execute("DELETE FROM erp.asset_depreciation_entries WHERE company_id=%s", (company_id,))
+            conn.execute("DELETE FROM erp.bank_revaluations WHERE company_id=%s", (company_id,))
+            conn.execute("DELETE FROM erp.opening_balance_batches WHERE company_id=%s", (company_id,))
+            conn.execute("DELETE FROM erp.invoice_lines WHERE company_id=%s", (company_id,))
+            conn.execute("DELETE FROM erp.invoices WHERE company_id=%s", (company_id,))
+            conn.execute("DELETE FROM erp.cash_transactions WHERE company_id=%s", (company_id,))
+            conn.execute("UPDATE erp.journal_vouchers SET reversal_of_voucher_id=NULL, correction_of_voucher_id=NULL WHERE company_id=%s", (company_id,))
+            conn.execute("DELETE FROM erp.journal_vouchers WHERE company_id=%s", (company_id,))
+
+            if data.mode == "FULL_PRESERVE_CHART":
+                conn.execute("DELETE FROM erp.fixed_assets WHERE company_id=%s", (company_id,))
+                conn.execute("DELETE FROM erp.asset_categories WHERE company_id=%s", (company_id,))
+                conn.execute("DELETE FROM erp.bank_accounts WHERE company_id=%s", (company_id,))
+                conn.execute("DELETE FROM erp.parties WHERE company_id=%s", (company_id,))
+                conn.execute("DELETE FROM erp.exchange_rates WHERE company_id=%s", (company_id,))
+                conn.execute("DELETE FROM erp.cost_centers WHERE company_id=%s", (company_id,))
+                conn.execute("DELETE FROM erp.branches WHERE company_id=%s", (company_id,))
+                conn.execute("DELETE FROM erp.fiscal_years WHERE company_id=%s", (company_id,))
+                current_year = date.today().year
+                fy = conn.execute(
+                    """INSERT INTO erp.fiscal_years(group_id,company_id,year_name,start_date,end_date)
+                       VALUES (%s,%s,%s,%s,%s) RETURNING fiscal_year_id""",
+                    (user["group_id"], company_id, str(current_year), date(current_year,1,1), date(current_year,12,31)),
+                ).fetchone()
+                conn.execute("SELECT erp.create_monthly_periods(%s)", (fy["fiscal_year_id"],))
+            else:
+                conn.execute("UPDATE erp.bank_accounts SET opening_balance=0,opening_balance_base=0 WHERE company_id=%s", (company_id,))
+                conn.execute("UPDATE erp.fixed_assets SET accumulated_depreciation=0,last_depreciation_date=NULL WHERE company_id=%s", (company_id,))
+
+            reset_row = conn.execute(
+                """INSERT INTO erp.company_data_resets(group_id,company_id,reset_mode,counts_before,requested_by,reason)
+                   VALUES (%s,%s,%s,%s::jsonb,%s,%s) RETURNING reset_id,created_at""",
+                (user["group_id"], company_id, data.mode, json.dumps(counts), user["user_id"], data.reason),
+            ).fetchone()
+            audit(conn, user, "RESET_COMPANY_DATA", "COMPANY", company_id, company_id, {"mode": data.mode, "counts": counts, "reset_id": reset_row["reset_id"]})
+            return {"message": "تم تصفير بيانات الشركة مع الاحتفاظ بالشركة والمستخدمين وشجرة الحسابات", "reset": reset_row, "counts_deleted": counts}
 
 
 @app.get("/api/opening-balances")
@@ -2488,23 +2797,41 @@ def journal_register(
 
 
 @app.get("/api/trial-balance")
-def trial_balance(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, as_of_date: date = Query(default_factory=date.today)) -> list[dict[str, Any]]:
+def trial_balance(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    company_id: UUID,
+    as_of_date: date = Query(default_factory=date.today),
+    date_from: date | None = None,
+    include_zero: bool = False,
+) -> list[dict[str, Any]]:
+    """Internal control report. IFRS does not prescribe a trial-balance format."""
     require_permission(user, "REPORT_VIEW")
     ensure_company_access(user, company_id)
+    period_start = date_from or date(as_of_date.year, 1, 1)
+    if period_start > as_of_date:
+        raise HTTPException(status_code=422, detail="تاريخ البداية أكبر من تاريخ التقرير")
     with pool.connection() as conn:
         return conn.execute(
             """SELECT a.local_account_code AS account_code, a.local_account_name AS account_name,
-                      ga.account_class, SUM(e.debit_amount)::NUMERIC(20,4) AS total_debit,
-                      SUM(e.credit_amount)::NUMERIC(20,4) AS total_credit,
-                      SUM(e.debit_amount-e.credit_amount)::NUMERIC(20,4) AS net_balance
-               FROM erp.journal_entries e
-               JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id AND v.company_id=e.company_id AND v.group_id=e.group_id
-               JOIN erp.accounts a ON a.account_id=e.account_id AND a.company_id=e.company_id AND a.group_id=e.group_id
-               JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
-               WHERE e.group_id=%s AND e.company_id=%s AND v.status='POSTED' AND v.posting_date<=%s
-               GROUP BY a.account_id, ga.account_class
-               HAVING SUM(e.debit_amount)<>0 OR SUM(e.credit_amount)<>0 ORDER BY a.local_account_code""",
-            (user["group_id"], company_id, as_of_date),
+                      ga.account_class, ga.normal_balance,
+                      COALESCE(SUM(e.debit_amount) FILTER (WHERE v.posting_date < %s),0)::NUMERIC(20,4) AS opening_debit,
+                      COALESCE(SUM(e.credit_amount) FILTER (WHERE v.posting_date < %s),0)::NUMERIC(20,4) AS opening_credit,
+                      COALESCE(SUM(e.debit_amount) FILTER (WHERE v.posting_date BETWEEN %s AND %s),0)::NUMERIC(20,4) AS period_debit,
+                      COALESCE(SUM(e.credit_amount) FILTER (WHERE v.posting_date BETWEEN %s AND %s),0)::NUMERIC(20,4) AS period_credit,
+                      COALESCE(SUM(e.debit_amount) FILTER (WHERE v.voucher_id IS NOT NULL),0)::NUMERIC(20,4) AS total_debit,
+                      COALESCE(SUM(e.credit_amount) FILTER (WHERE v.voucher_id IS NOT NULL),0)::NUMERIC(20,4) AS total_credit,
+                      GREATEST(COALESCE(SUM(e.debit_amount-e.credit_amount) FILTER (WHERE v.voucher_id IS NOT NULL),0),0)::NUMERIC(20,4) AS closing_debit,
+                      GREATEST(-COALESCE(SUM(e.debit_amount-e.credit_amount) FILTER (WHERE v.voucher_id IS NOT NULL),0),0)::NUMERIC(20,4) AS closing_credit,
+                      COALESCE(SUM(e.debit_amount-e.credit_amount) FILTER (WHERE v.voucher_id IS NOT NULL),0)::NUMERIC(20,4) AS net_balance
+               FROM erp.accounts a
+               JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id AND ga.group_id=a.group_id
+               LEFT JOIN erp.journal_entries e ON e.account_id=a.account_id AND e.company_id=a.company_id AND e.group_id=a.group_id
+               LEFT JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id AND v.status='POSTED' AND v.posting_date<=%s
+               WHERE a.group_id=%s AND a.company_id=%s AND a.is_active=TRUE
+               GROUP BY a.account_id,ga.account_class,ga.normal_balance
+               HAVING %s OR COALESCE(SUM(ABS(e.debit_amount)+ABS(e.credit_amount)) FILTER (WHERE v.voucher_id IS NOT NULL),0)<>0
+               ORDER BY a.local_account_code""",
+            (period_start,period_start,period_start,as_of_date,period_start,as_of_date,as_of_date,user["group_id"],company_id,include_zero),
         ).fetchall()
 
 
@@ -2523,6 +2850,118 @@ def general_ledger(user: Annotated[dict[str, Any], Depends(get_current_user)], c
                ORDER BY v.posting_date, v.created_at, e.line_no""",
             (user["group_id"], company_id, account_id, date_from, date_to),
         ).fetchall()
+
+
+def _safe_prior_year_date(value: date) -> date:
+    try:
+        return value.replace(year=value.year - 1)
+    except ValueError:
+        return value.replace(year=value.year - 1, day=28)
+
+
+def _fiscal_year_start(conn: Connection, company_id: UUID, as_of_date: date) -> date:
+    row = conn.execute(
+        """SELECT start_date FROM erp.fiscal_years
+           WHERE company_id=%s AND %s BETWEEN start_date AND end_date
+           ORDER BY start_date DESC LIMIT 1""",
+        (company_id, as_of_date),
+    ).fetchone()
+    return row["start_date"] if row else date(as_of_date.year, 1, 1)
+
+
+def _sfp_snapshot(conn: Connection, group_id: UUID, company_id: UUID, as_of_date: date) -> dict[str, Any]:
+    rows = conn.execute(
+        """SELECT COALESCE(ga.ifrs_category,
+                       CASE ga.account_class WHEN 'ASSET' THEN 'NONCURRENT_ASSET'
+                                             WHEN 'LIABILITY' THEN 'NONCURRENT_LIABILITY'
+                                             ELSE 'EQUITY' END) AS section,
+                  COALESCE(ga.ifrs_line_code,ga.account_code) AS line_code,
+                  COALESCE(ga.ifrs_line_name_ar,ga.account_name) AS line_name,
+                  COALESCE(ga.ifrs_sort_order,999) AS sort_order,
+                  SUM(CASE WHEN ga.account_class='ASSET'
+                           THEN e.debit_amount-e.credit_amount
+                           ELSE e.credit_amount-e.debit_amount END)::NUMERIC(20,4) AS amount
+           FROM erp.journal_entries e
+           JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id AND v.status='POSTED'
+           JOIN erp.accounts a ON a.account_id=e.account_id AND a.company_id=e.company_id AND a.group_id=e.group_id
+           JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id AND ga.group_id=a.group_id
+           WHERE e.group_id=%s AND e.company_id=%s AND v.posting_date<=%s
+             AND ga.account_class IN ('ASSET','LIABILITY','EQUITY')
+           GROUP BY section,line_code,line_name,sort_order
+           HAVING SUM(ABS(e.debit_amount)+ABS(e.credit_amount))<>0
+           ORDER BY sort_order,line_name""",
+        (group_id, company_id, as_of_date),
+    ).fetchall()
+    fy_start = _fiscal_year_start(conn, company_id, as_of_date)
+    profit_row = conn.execute(
+        """SELECT COALESCE(SUM(CASE WHEN ga.account_class='REVENUE'
+                                    THEN e.credit_amount-e.debit_amount
+                                    ELSE -(e.debit_amount-e.credit_amount) END),0)::NUMERIC(20,4) AS profit
+           FROM erp.journal_entries e
+           JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id AND v.status='POSTED'
+           JOIN erp.accounts a ON a.account_id=e.account_id
+           JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
+           WHERE e.group_id=%s AND e.company_id=%s AND v.posting_date BETWEEN %s AND %s
+             AND ga.account_class IN ('REVENUE','EXPENSE')""",
+        (group_id, company_id, fy_start, as_of_date),
+    ).fetchone()
+    current_profit = money(profit_row["profit"] if profit_row else 0)
+    if current_profit:
+        rows.append({"section":"EQUITY","line_code":"CURRENT_PERIOD_RESULT","line_name":"نتيجة الفترة الحالية","sort_order":590,"amount":current_profit})
+    totals = {
+        "current_assets": money(sum(Decimal(str(r["amount"])) for r in rows if r["section"] == "CURRENT_ASSET")),
+        "noncurrent_assets": money(sum(Decimal(str(r["amount"])) for r in rows if r["section"] == "NONCURRENT_ASSET")),
+        "current_liabilities": money(sum(Decimal(str(r["amount"])) for r in rows if r["section"] == "CURRENT_LIABILITY")),
+        "noncurrent_liabilities": money(sum(Decimal(str(r["amount"])) for r in rows if r["section"] == "NONCURRENT_LIABILITY")),
+        "equity": money(sum(Decimal(str(r["amount"])) for r in rows if r["section"] == "EQUITY")),
+    }
+    totals["total_assets"] = money(totals["current_assets"] + totals["noncurrent_assets"])
+    totals["total_liabilities"] = money(totals["current_liabilities"] + totals["noncurrent_liabilities"])
+    totals["liabilities_and_equity"] = money(totals["total_liabilities"] + totals["equity"])
+    totals["difference"] = money(totals["total_assets"] - totals["liabilities_and_equity"])
+    return {"rows": rows, "totals": totals, "fiscal_year_start": fy_start, "current_period_profit": current_profit}
+
+
+@app.get("/api/ifrs-statement-financial-position")
+def ifrs_statement_financial_position(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    company_id: UUID,
+    as_of_date: date,
+    comparative_date: date | None = None,
+) -> dict[str, Any]:
+    require_permission(user, "REPORT_VIEW")
+    ensure_company_access(user, company_id)
+    comparative_date = comparative_date or _safe_prior_year_date(as_of_date)
+    with pool.connection() as conn:
+        current = _sfp_snapshot(conn, user["group_id"], company_id, as_of_date)
+        comparative = _sfp_snapshot(conn, user["group_id"], company_id, comparative_date)
+        standard_row = conn.execute(
+            "SELECT financial_statement_standard,presentation_currency FROM erp.corporate_groups WHERE group_id=%s",
+            (user["group_id"],),
+        ).fetchone()
+    merged: dict[tuple[str,str], dict[str, Any]] = {}
+    for row in current["rows"]:
+        merged[(row["section"],row["line_code"])] = {**row, "current_amount": row["amount"], "comparative_amount": Decimal("0")}
+    for row in comparative["rows"]:
+        key=(row["section"],row["line_code"])
+        item=merged.setdefault(key,{**row,"current_amount":Decimal("0"),"comparative_amount":Decimal("0")})
+        item["comparative_amount"]=row["amount"]
+    section_order={"CURRENT_ASSET":1,"NONCURRENT_ASSET":2,"CURRENT_LIABILITY":3,"NONCURRENT_LIABILITY":4,"EQUITY":5}
+    rows=sorted(merged.values(),key=lambda r:(section_order.get(r["section"],9),r.get("sort_order",999),r["line_name"]))
+    return {
+        "standard": (standard_row or {}).get("financial_statement_standard","IAS1_2026"),
+        "presentation_currency": (standard_row or {}).get("presentation_currency","EGP"),
+        "as_of_date": as_of_date,
+        "comparative_date": comparative_date,
+        "rows": rows,
+        "totals": current["totals"],
+        "comparative_totals": comparative["totals"],
+        "notes": [
+            "عرض متداول/غير متداول وفق إعدادات التصنيف بالحسابات.",
+            "تم إدراج نتيجة الفترة الحالية ضمن حقوق الملكية لأغراض الاتزان قبل قيد الإقفال.",
+            "يلزم اعتماد السياسات والإفصاحات النهائية من الإدارة والمراجع الخارجي.",
+        ],
+    }
 
 
 @app.get("/api/income-statement")
@@ -2549,23 +2988,15 @@ def income_statement(user: Annotated[dict[str, Any], Depends(get_current_user)],
 
 @app.get("/api/balance-sheet")
 def balance_sheet(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, as_of_date: date) -> dict[str, Any]:
+    """Backward-compatible alias using the IFRS-oriented statement logic."""
     require_permission(user, "REPORT_VIEW")
     ensure_company_access(user, company_id)
     with pool.connection() as conn:
-        rows = conn.execute(
-            """SELECT ga.account_class, a.local_account_code AS account_code, a.local_account_name AS account_name,
-                      CASE WHEN ga.account_class='ASSET' THEN SUM(e.debit_amount-e.credit_amount)
-                           ELSE SUM(e.credit_amount-e.debit_amount) END::NUMERIC(20,4) AS amount
-               FROM erp.journal_entries e JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
-               JOIN erp.accounts a ON a.account_id=e.account_id
-               JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
-               WHERE e.group_id=%s AND e.company_id=%s AND v.status='POSTED'
-                 AND v.posting_date<=%s AND ga.account_class IN ('ASSET','LIABILITY','EQUITY')
-               GROUP BY ga.account_class, a.account_id ORDER BY ga.account_class, a.local_account_code""",
-            (user["group_id"], company_id, as_of_date),
-        ).fetchall()
-    totals = {c: money(sum(Decimal(str(r["amount"])) for r in rows if r["account_class"] == c)) for c in ("ASSET", "LIABILITY", "EQUITY")}
-    return {"rows": rows, "totals": totals, "difference": money(totals["ASSET"]-totals["LIABILITY"]-totals["EQUITY"])}
+        snapshot = _sfp_snapshot(conn, user["group_id"], company_id, as_of_date)
+    legacy_rows=[]
+    for r in snapshot["rows"]:
+        legacy_rows.append({"account_class": r["section"], "account_code": r["line_code"], "account_name": r["line_name"], "amount": r["amount"]})
+    return {"rows":legacy_rows,"totals":{"ASSET":snapshot["totals"]["total_assets"],"LIABILITY":snapshot["totals"]["total_liabilities"],"EQUITY":snapshot["totals"]["equity"]},"difference":snapshot["totals"]["difference"]}
 
 
 @app.get("/api/consolidated-trial-balance")
