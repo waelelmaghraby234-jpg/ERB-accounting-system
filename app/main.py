@@ -238,16 +238,54 @@ def seed_default_chart(conn: Connection, group_id: UUID) -> None:
         ("518000", "مصروفات عمومية وإدارية", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
         ("519000", "مصروفات بين شركات المجموعة", "EXPENSE", "DEBIT", "500000", True, True, "IC_EXPENSE"),
     ]
+    chart.extend([
+        ("116000", "المخزون", "ASSET", "DEBIT", "110000", True, False, "NONE"),
+        ("117000", "مصروفات مدفوعة مقدماً", "ASSET", "DEBIT", "110000", True, False, "NONE"),
+        ("118000", "أرصدة مدينة أخرى", "ASSET", "DEBIT", "110000", True, False, "NONE"),
+        ("126000", "مشروعات تحت التنفيذ", "ASSET", "DEBIT", "120000", False, False, "NONE"),
+        ("126100", "أعمال إنشائية تحت التنفيذ", "ASSET", "DEBIT", "126000", True, False, "NONE"),
+        ("126200", "أتعاب استشارية ورسوم مشروعات", "ASSET", "DEBIT", "126000", True, False, "NONE"),
+        ("127000", "أصول غير ملموسة", "ASSET", "DEBIT", "120000", True, False, "NONE"),
+        ("128000", "أصول حق استخدام", "ASSET", "DEBIT", "120000", True, False, "NONE"),
+        ("129000", "استثمارات وأصول مالية طويلة الأجل", "ASSET", "DEBIT", "120000", True, False, "NONE"),
+        ("215000", "ضرائب وتأمينات مستحقة", "LIABILITY", "CREDIT", "210000", True, False, "NONE"),
+        ("216000", "إيرادات مؤجلة", "LIABILITY", "CREDIT", "210000", True, False, "NONE"),
+        ("217000", "قروض قصيرة الأجل", "LIABILITY", "CREDIT", "210000", True, False, "NONE"),
+        ("218000", "التزامات إيجار متداولة", "LIABILITY", "CREDIT", "210000", True, False, "NONE"),
+        ("220000", "الالتزامات غير المتداولة", "LIABILITY", "CREDIT", "200000", False, False, "NONE"),
+        ("221000", "قروض طويلة الأجل", "LIABILITY", "CREDIT", "220000", True, False, "NONE"),
+        ("222000", "التزامات إيجار غير متداولة", "LIABILITY", "CREDIT", "220000", True, False, "NONE"),
+        ("223000", "التزامات منافع الموظفين", "LIABILITY", "CREDIT", "220000", True, False, "NONE"),
+        ("314000", "احتياطيات", "EQUITY", "CREDIT", "300000", True, False, "NONE"),
+        ("315000", "الدخل الشامل الآخر", "EQUITY", "CREDIT", "300000", True, False, "NONE"),
+        ("414000", "إيرادات إيجارات", "REVENUE", "CREDIT", "400000", True, False, "NONE"),
+        ("415000", "إيرادات فوائد", "REVENUE", "CREDIT", "400000", True, False, "NONE"),
+        ("416000", "أرباح بيع أصول", "REVENUE", "CREDIT", "400000", True, False, "NONE"),
+        ("520000", "تكلفة المبيعات", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
+        ("521000", "تكاليف التمويل", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
+        ("522000", "مصروف ضريبة الدخل", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
+        ("523000", "خسائر اضمحلال", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
+        ("524000", "خسائر بيع أصول", "EXPENSE", "DEBIT", "500000", True, False, "NONE"),
+    ])
+    names_en = {
+        "100000":"Assets","110000":"Current Assets","111000":"Cash on Hand","112000":"Banks","113000":"Trade Receivables","114000":"Input VAT","115000":"Due from Group Companies","116000":"Inventories","117000":"Prepayments","118000":"Other Receivables",
+        "120000":"Non-current Assets","121000":"Land and Buildings","122000":"Furniture and Equipment","123000":"Motor Vehicles","124000":"Accumulated Depreciation","125000":"Investments in Subsidiaries","126000":"Construction in Progress","126100":"Construction Work in Progress","126200":"Project Consultancy and Fees","127000":"Intangible Assets","128000":"Right-of-use Assets","129000":"Long-term Investments and Financial Assets",
+        "200000":"Liabilities","210000":"Current Liabilities","211000":"Trade Payables","212000":"Accrued Expenses","213000":"Output VAT","214000":"Due to Group Companies","215000":"Taxes and Social Insurance Payable","216000":"Deferred Revenue","217000":"Short-term Loans","218000":"Current Lease Liabilities","220000":"Non-current Liabilities","221000":"Long-term Loans","222000":"Non-current Lease Liabilities","223000":"Employee Benefit Obligations",
+        "300000":"Equity","311000":"Share Capital","312000":"Retained Earnings","313000":"Current Year Profit or Loss","314000":"Reserves","315000":"Other Comprehensive Income",
+        "400000":"Revenue","411000":"Hotel Revenue","412000":"Development Revenue","413000":"Management and Service Revenue","414000":"Rental Revenue","415000":"Interest Income","416000":"Gain on Disposal of Assets","419000":"Intercompany Revenue",
+        "500000":"Expenses","511000":"Operating Costs","512000":"Salaries and Wages","513000":"Rent Expense","514000":"Utilities and Energy","515000":"Marketing Expenses","516000":"Depreciation Expense","517000":"Bank Charges","518000":"General and Administrative Expenses","519000":"Intercompany Expenses","520000":"Cost of Sales","521000":"Finance Costs","522000":"Income Tax Expense","523000":"Impairment Losses","524000":"Loss on Disposal of Assets",
+    }
     ids: dict[str, UUID] = {}
     for code, name, cls, normal, _parent, postable, inter, role in chart:
         row = conn.execute(
             """
             INSERT INTO erp.group_accounts
-                (group_id, account_code, account_name, account_class, normal_balance,
+                (group_id, account_code, account_name, account_name_en, account_class, normal_balance,
                  is_postable, is_intercompany, intercompany_role)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (group_id, account_code) DO UPDATE
               SET account_name=EXCLUDED.account_name,
+                  account_name_en=EXCLUDED.account_name_en,
                   account_class=EXCLUDED.account_class,
                   normal_balance=EXCLUDED.normal_balance,
                   is_postable=EXCLUDED.is_postable,
@@ -256,7 +294,7 @@ def seed_default_chart(conn: Connection, group_id: UUID) -> None:
                   is_active=TRUE
             RETURNING group_account_id
             """,
-            (group_id, code, name, cls, normal, postable, inter, role),
+            (group_id, code, name, names_en[code], cls, normal, postable, inter, role),
         ).fetchone()
         ids[code] = row["group_account_id"]
     for code, _name, _cls, _normal, parent, _postable, _inter, _role in chart:
@@ -307,7 +345,7 @@ def seed_cairo_group(conn: Connection, group_id: UUID) -> None:
     ).fetchall()
     postable = conn.execute(
         """
-        SELECT group_account_id, account_code, account_name
+        SELECT group_account_id, account_code, account_name, account_name_en
         FROM erp.group_accounts WHERE group_id=%s AND is_postable=TRUE AND is_active=TRUE
         """,
         (group_id,),
@@ -318,14 +356,19 @@ def seed_cairo_group(conn: Connection, group_id: UUID) -> None:
             conn.execute(
                 """
                 INSERT INTO erp.accounts
-                    (group_id, company_id, group_account_id, local_account_code, local_account_name)
-                VALUES (%s,%s,%s,%s,%s)
+                    (group_id, company_id, group_account_id, local_account_code, local_account_name, local_account_name_en)
+                VALUES (%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (company_id, local_account_code) DO UPDATE
                   SET group_account_id=EXCLUDED.group_account_id,
-                      local_account_name=EXCLUDED.local_account_name,
+                      local_account_name_en=CASE
+                        WHEN accounts.local_account_name_en IS NULL
+                          OR accounts.local_account_name_en=accounts.local_account_name
+                        THEN EXCLUDED.local_account_name_en
+                        ELSE accounts.local_account_name_en
+                      END,
                       is_active=TRUE
                 """,
-                (group_id, company["company_id"], account["group_account_id"], account["account_code"], account["account_name"]),
+                (group_id, company["company_id"], account["group_account_id"], account["account_code"], account["account_name"], account["account_name_en"]),
             )
         conn.execute(
             """
@@ -363,6 +406,11 @@ def migrate_and_seed() -> None:
             for schema_path in sorted(database_dir.glob("*.sql")):
                 conn.execute(schema_path.read_text(encoding="utf-8"))
                 conn.commit()
+            conn.execute("ALTER TABLE erp.group_accounts ADD COLUMN IF NOT EXISTS account_name_en VARCHAR(250)")
+            conn.execute("ALTER TABLE erp.accounts ADD COLUMN IF NOT EXISTS local_account_name_en VARCHAR(250)")
+            conn.execute("UPDATE erp.group_accounts SET account_name_en=account_name WHERE account_name_en IS NULL")
+            conn.execute("UPDATE erp.accounts SET local_account_name_en=local_account_name WHERE local_account_name_en IS NULL")
+            conn.commit()
 
         admin_email = os.environ.get("ADMIN_EMAIL", "admin@example.com").lower().strip()
         admin_password = os.environ.get("ADMIN_PASSWORD", "")
@@ -411,7 +459,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Cairo Group Holding ERP",
-    version="0.3.0",
+    version="0.4.0",
     description="Multi-company cloud accounting: GL, AR, AP, banks and fixed assets",
     lifespan=lifespan,
 )
@@ -463,6 +511,7 @@ class CompanyUpdate(BaseModel):
 class GroupAccountCreate(BaseModel):
     account_code: str = Field(min_length=1, max_length=50)
     account_name: str = Field(min_length=1, max_length=250)
+    account_name_en: str = Field(min_length=1, max_length=250)
     account_class: Literal["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"]
     normal_balance: Literal["DEBIT", "CREDIT"]
     parent_group_account_id: UUID | None = None
@@ -476,6 +525,7 @@ class CompanyAccountCreate(BaseModel):
     group_account_id: UUID
     local_account_code: str = Field(min_length=1, max_length=50)
     local_account_name: str = Field(min_length=1, max_length=250)
+    local_account_name_en: str = Field(min_length=1, max_length=250)
 
 
 class VoucherEntryCreate(BaseModel):
@@ -643,6 +693,15 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=12)
 
 
+class CompanyResetRequest(BaseModel):
+    company_id: UUID
+    confirmation: str
+
+
+class GroupResetRequest(BaseModel):
+    confirmation: str
+
+
 def get_current_user(authorization: Annotated[str | None, Header()] = None) -> dict[str, Any]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
@@ -675,7 +734,7 @@ def home() -> FileResponse:
 def health() -> dict[str, str]:
     with pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok", "version": "0.3.0"}
+    return {"status": "ok", "version": "0.4.0"}
 
 
 @app.post("/api/auth/login")
@@ -837,11 +896,81 @@ def delete_company(
     return {"status": "deleted", "company_id": str(company_id)}
 
 
+@app.post("/api/admin/reset-company")
+def reset_company_data(data: CompanyResetRequest, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_group_admin(user)
+    with pool.connection() as conn:
+        company = conn.execute(
+            "SELECT company_code, company_name FROM erp.companies WHERE group_id=%s AND company_id=%s AND is_active=TRUE",
+            (user["group_id"], data.company_id),
+        ).fetchone()
+        if not company:
+            raise HTTPException(status_code=404, detail="الشركة غير موجودة / Company not found")
+        expected = f"RESET {company['company_code']}"
+        if data.confirmation.strip() != expected:
+            raise HTTPException(status_code=422, detail=f"اكتب {expected} للتأكيد / Type {expected} to confirm")
+        try:
+            counts: dict[str, int] = {}
+            commands = [
+                ("asset_depreciation_entries", "DELETE FROM erp.asset_depreciation_entries WHERE group_id=%s AND company_id=%s"),
+                ("fixed_assets", "DELETE FROM erp.fixed_assets WHERE group_id=%s AND company_id=%s"),
+                ("asset_categories", "DELETE FROM erp.asset_categories WHERE group_id=%s AND company_id=%s"),
+                ("invoice_lines", """DELETE FROM erp.invoice_lines WHERE invoice_id IN
+                    (SELECT invoice_id FROM erp.invoices WHERE group_id=%s AND company_id=%s)"""),
+                ("invoices", "DELETE FROM erp.invoices WHERE group_id=%s AND company_id=%s"),
+                ("cash_transactions", "DELETE FROM erp.cash_transactions WHERE group_id=%s AND company_id=%s"),
+                ("bank_accounts", "DELETE FROM erp.bank_accounts WHERE group_id=%s AND company_id=%s"),
+                ("parties", "DELETE FROM erp.parties WHERE group_id=%s AND company_id=%s"),
+                ("journal_entries", "DELETE FROM erp.journal_entries WHERE group_id=%s AND company_id=%s"),
+                ("journal_vouchers", "DELETE FROM erp.journal_vouchers WHERE group_id=%s AND company_id=%s"),
+            ]
+            for label, sql in commands:
+                result = conn.execute(sql, (user["group_id"], data.company_id))
+                counts[label] = result.rowcount
+            audit(conn, user, "RESET", "COMPANY_DATA", data.company_id, data.company_id, counts)
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            raise HTTPException(status_code=400, detail=f"تعذر تصفير الشركة / Reset failed: {exc}") from exc
+    return {"status": "reset", "company_id": str(data.company_id), "deleted": counts}
+
+
+@app.post("/api/admin/reset-all")
+def reset_all_company_data(data: GroupResetRequest, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_group_admin(user)
+    if data.confirmation.strip() != "RESET ALL":
+        raise HTTPException(status_code=422, detail="اكتب RESET ALL للتأكيد / Type RESET ALL to confirm")
+    with pool.connection() as conn:
+        try:
+            counts: dict[str, int] = {}
+            commands = [
+                ("asset_depreciation_entries", "DELETE FROM erp.asset_depreciation_entries WHERE group_id=%s"),
+                ("fixed_assets", "DELETE FROM erp.fixed_assets WHERE group_id=%s"),
+                ("asset_categories", "DELETE FROM erp.asset_categories WHERE group_id=%s"),
+                ("invoice_lines", "DELETE FROM erp.invoice_lines WHERE invoice_id IN (SELECT invoice_id FROM erp.invoices WHERE group_id=%s)"),
+                ("invoices", "DELETE FROM erp.invoices WHERE group_id=%s"),
+                ("cash_transactions", "DELETE FROM erp.cash_transactions WHERE group_id=%s"),
+                ("bank_accounts", "DELETE FROM erp.bank_accounts WHERE group_id=%s"),
+                ("parties", "DELETE FROM erp.parties WHERE group_id=%s"),
+                ("journal_entries", "DELETE FROM erp.journal_entries WHERE group_id=%s"),
+                ("journal_vouchers", "DELETE FROM erp.journal_vouchers WHERE group_id=%s"),
+            ]
+            for label, sql in commands:
+                result = conn.execute(sql, (user["group_id"],))
+                counts[label] = result.rowcount
+            audit(conn, user, "RESET", "ALL_COMPANY_DATA", details=counts)
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            raise HTTPException(status_code=400, detail=f"تعذر تصفير البرنامج / Reset failed: {exc}") from exc
+    return {"status": "reset_all", "deleted": counts}
+
+
 @app.get("/api/group-accounts")
 def list_group_accounts(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> list[dict[str, Any]]:
     with pool.connection() as conn:
         return conn.execute(
-            """SELECT group_account_id, account_code, account_name, account_class,
+            """SELECT group_account_id, account_code, account_name, account_name_en, account_class,
                       normal_balance, parent_group_account_id, is_postable,
                       is_intercompany, intercompany_role
                FROM erp.group_accounts WHERE group_id=%s AND is_active=TRUE ORDER BY account_code""",
@@ -858,11 +987,11 @@ def create_group_account(data: GroupAccountCreate, user: Annotated[dict[str, Any
         row = conn.execute(
             """
             INSERT INTO erp.group_accounts
-                (group_id, account_code, account_name, account_class, normal_balance,
+                (group_id, account_code, account_name, account_name_en, account_class, normal_balance,
                  parent_group_account_id, is_postable, is_intercompany, intercompany_role)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
             """,
-            (user["group_id"], data.account_code, data.account_name, data.account_class,
+            (user["group_id"], data.account_code, data.account_name, data.account_name_en, data.account_class,
              data.normal_balance, data.parent_group_account_id, data.is_postable,
              data.is_intercompany, data.intercompany_role),
         ).fetchone()
@@ -877,8 +1006,9 @@ def list_accounts(user: Annotated[dict[str, Any], Depends(get_current_user)], co
     with pool.connection() as conn:
         return conn.execute(
             """
-            SELECT a.account_id, a.local_account_code, a.local_account_name,
+            SELECT a.account_id, a.local_account_code, a.local_account_name, a.local_account_name_en,
                    ga.account_code AS group_account_code, ga.account_name AS group_account_name,
+                   ga.account_name_en AS group_account_name_en,
                    ga.account_class, ga.normal_balance, ga.is_intercompany, ga.intercompany_role
             FROM erp.accounts a
             JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id AND ga.group_id=a.group_id
@@ -896,11 +1026,11 @@ def create_account(data: CompanyAccountCreate, user: Annotated[dict[str, Any], D
         row = conn.execute(
             """
             INSERT INTO erp.accounts
-                (group_id, company_id, group_account_id, local_account_code, local_account_name)
-            VALUES (%s,%s,%s,%s,%s) RETURNING *
+                (group_id, company_id, group_account_id, local_account_code, local_account_name, local_account_name_en)
+            VALUES (%s,%s,%s,%s,%s,%s) RETURNING *
             """,
             (user["group_id"], data.company_id, data.group_account_id,
-             data.local_account_code, data.local_account_name),
+             data.local_account_code, data.local_account_name, data.local_account_name_en),
         ).fetchone()
         audit(conn, user, "CREATE", "ACCOUNT", row["account_id"], data.company_id)
         conn.commit()
@@ -1048,7 +1178,7 @@ def download_opening_balance_template(
             (user["group_id"], company_id),
         ).fetchone()
         accounts = conn.execute(
-            """SELECT a.local_account_code, a.local_account_name, ga.is_intercompany
+            """SELECT a.local_account_code, a.local_account_name, a.local_account_name_en, ga.is_intercompany
                FROM erp.accounts a
                JOIN erp.group_accounts ga
                  ON ga.group_account_id=a.group_account_id AND ga.group_id=a.group_id
@@ -1085,7 +1215,7 @@ def download_opening_balance_template(
     for account in accounts:
         ws.append([
             account["local_account_code"],
-            account["local_account_name"],
+            f"{account['local_account_name']} / {account['local_account_name_en']}",
             None,
             None,
             None,
@@ -1164,7 +1294,7 @@ async def preview_opening_balances(
 
     with pool.connection() as conn:
         account_rows = conn.execute(
-            """SELECT a.account_id, a.local_account_code, a.local_account_name,
+            """SELECT a.account_id, a.local_account_code, a.local_account_name, a.local_account_name_en,
                       ga.is_intercompany
                FROM erp.accounts a
                JOIN erp.group_accounts ga
@@ -1246,6 +1376,7 @@ async def preview_opening_balances(
             "account_id": str(account["account_id"]) if account else None,
             "account_code": code,
             "account_name": account["local_account_name"] if account else str(value(row, "اسم الحساب") or ""),
+            "account_name_en": account["local_account_name_en"] if account else "",
             "debit_amount": str(debit),
             "credit_amount": str(credit),
             "counterparty_company_id": str(counterparty["company_id"]) if counterparty else None,
@@ -1321,7 +1452,7 @@ def list_bank_accounts(user: Annotated[dict[str, Any], Depends(get_current_user)
         return conn.execute(
             """SELECT b.bank_account_id, b.bank_code, b.bank_name, b.account_name,
                       b.account_number, b.iban, b.currency, b.opening_balance,
-                      b.gl_account_id, a.local_account_code, a.local_account_name,
+                      b.gl_account_id, a.local_account_code, a.local_account_name, a.local_account_name_en,
                       b.opening_balance + COALESCE(SUM(CASE WHEN ct.transaction_type='RECEIPT' THEN ct.amount ELSE -ct.amount END),0) AS current_balance
                FROM erp.bank_accounts b
                JOIN erp.accounts a ON a.account_id=b.gl_account_id
@@ -1803,6 +1934,7 @@ def trial_balance(user: Annotated[dict[str, Any], Depends(get_current_user)], co
     with pool.connection() as conn:
         return conn.execute(
             """SELECT a.local_account_code AS account_code, a.local_account_name AS account_name,
+                      a.local_account_name_en AS account_name_en,
                       ga.account_class, SUM(e.debit_amount)::NUMERIC(20,4) AS total_debit,
                       SUM(e.credit_amount)::NUMERIC(20,4) AS total_credit,
                       SUM(e.debit_amount-e.credit_amount)::NUMERIC(20,4) AS net_balance
@@ -1854,7 +1986,7 @@ def general_ledger_range(
             (user["group_id"], company_id),
         ).fetchone()
         accounts = conn.execute(
-            """SELECT account_id, local_account_code, local_account_name
+            """SELECT account_id, local_account_code, local_account_name, local_account_name_en
                FROM erp.accounts
                WHERE group_id=%s AND company_id=%s AND is_active=TRUE
                  AND local_account_code BETWEEN %s AND %s
@@ -1914,6 +2046,7 @@ def general_ledger_range(
             "account_id": account["account_id"],
             "account_code": account["local_account_code"],
             "account_name": account["local_account_name"],
+            "account_name_en": account["local_account_name_en"],
             "opening_balance": opening_map.get(account["account_id"], Decimal("0")),
             "closing_balance": running,
             "entries": lines,
@@ -1936,6 +2069,7 @@ def income_statement(user: Annotated[dict[str, Any], Depends(get_current_user)],
     with pool.connection() as conn:
         rows = conn.execute(
             """SELECT ga.account_class, a.local_account_code AS account_code, a.local_account_name AS account_name,
+                      a.local_account_name_en AS account_name_en,
                       CASE WHEN ga.account_class='REVENUE' THEN SUM(e.credit_amount-e.debit_amount)
                            ELSE SUM(e.debit_amount-e.credit_amount) END::NUMERIC(20,4) AS amount
                FROM erp.journal_entries e JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
@@ -1957,6 +2091,7 @@ def balance_sheet(user: Annotated[dict[str, Any], Depends(get_current_user)], co
     with pool.connection() as conn:
         rows = conn.execute(
             """SELECT ga.account_class, a.local_account_code AS account_code, a.local_account_name AS account_name,
+                      a.local_account_name_en AS account_name_en,
                       CASE WHEN ga.account_class='ASSET' THEN SUM(e.debit_amount-e.credit_amount)
                            ELSE SUM(e.credit_amount-e.debit_amount) END::NUMERIC(20,4) AS amount
                FROM erp.journal_entries e JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
@@ -1987,6 +2122,7 @@ def balance_sheet(user: Annotated[dict[str, Any], Depends(get_current_user)], co
             "account_class": "EQUITY",
             "account_code": "CURRENT_RESULT",
             "account_name": "نتيجة الفترة — أرباح / خسائر",
+            "account_name_en": "Profit or Loss for the Period",
             "amount": money(current_result),
         })
     totals = {c: money(sum(Decimal(str(r["amount"])) for r in rows if r["account_class"] == c)) for c in ("ASSET", "LIABILITY", "EQUITY")}
@@ -2004,7 +2140,7 @@ def consolidated_income_statement(
         raise HTTPException(status_code=422, detail="تاريخ البداية يجب أن يسبق تاريخ النهاية")
     with pool.connection() as conn:
         rows = conn.execute(
-            """SELECT ga.account_class, ga.account_code, ga.account_name,
+            """SELECT ga.account_class, ga.account_code, ga.account_name, ga.account_name_en,
                       CASE WHEN ga.account_class='REVENUE' THEN SUM(e.credit_amount-e.debit_amount)
                            ELSE SUM(e.debit_amount-e.credit_amount) END::NUMERIC(20,4) AS amount
                FROM erp.journal_entries e
@@ -2041,7 +2177,7 @@ def consolidated_balance_sheet(
     require_group_admin(user)
     with pool.connection() as conn:
         rows = conn.execute(
-            """SELECT ga.account_class, ga.account_code, ga.account_name,
+            """SELECT ga.account_class, ga.account_code, ga.account_name, ga.account_name_en,
                       CASE WHEN ga.account_class='ASSET' THEN SUM(e.debit_amount-e.credit_amount)
                            ELSE SUM(e.credit_amount-e.debit_amount) END::NUMERIC(20,4) AS amount
                FROM erp.journal_entries e
@@ -2077,6 +2213,7 @@ def consolidated_balance_sheet(
             "account_class": "EQUITY",
             "account_code": "CURRENT_RESULT",
             "account_name": "نتيجة الفترة المجمعة — أرباح / خسائر",
+            "account_name_en": "Consolidated Profit or Loss for the Period",
             "amount": money(current_result),
         })
     totals = {
@@ -2135,7 +2272,7 @@ def ifrs_statement(
             params.extend([end] if as_of else [start, end])
             params.append(list(classes))
             return conn.execute(
-                f"""SELECT ga.account_code, ga.account_name, ga.account_class,
+                f"""SELECT ga.account_code, ga.account_name, ga.account_name_en, ga.account_class,
                            SUM(e.debit_amount-e.credit_amount)::NUMERIC(20,4) AS net
                     FROM erp.journal_entries e
                     JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
@@ -2236,6 +2373,7 @@ def ifrs_statement(
             rows.append({
                 "account_code": code,
                 "account_name": base["account_name"],
+                "account_name_en": base["account_name_en"],
                 "section": section,
                 "current_amount": money(current_net * sign),
                 "comparative_amount": money(comparative_net * sign),
@@ -2244,6 +2382,7 @@ def ifrs_statement(
             rows.append({
                 "account_code": "CURRENT_RESULT",
                 "account_name": "نتيجة الفترة — أرباح / خسائر",
+                "account_name_en": "Profit or Loss for the Period",
                 "section": "EQUITY",
                 "current_amount": current_profit,
                 "comparative_amount": comparative_profit,
@@ -2256,6 +2395,7 @@ def ifrs_statement(
             rows.append({
                 "account_code": code,
                 "account_name": base["account_name"],
+                "account_name_en": base["account_name_en"],
                 "section": "EQUITY",
                 "current_amount": money(-Decimal(str(current.get(code, {}).get("net", 0)))),
                 "comparative_amount": money(-Decimal(str(comparative.get(code, {}).get("net", 0)))),
@@ -2263,6 +2403,7 @@ def ifrs_statement(
         rows.append({
             "account_code": "PERIOD_RESULT",
             "account_name": "صافي ربح / خسارة الفترة",
+            "account_name_en": "Net Profit or Loss for the Period",
             "section": "EQUITY",
             "current_amount": current_profit,
             "comparative_amount": comparative_profit,
@@ -2273,10 +2414,16 @@ def ifrs_statement(
             "INVESTING": "صافي التدفقات النقدية من الأنشطة الاستثمارية",
             "FINANCING": "صافي التدفقات النقدية من الأنشطة التمويلية",
         }
+        names_en = {
+            "OPERATING": "Net Cash Flows from Operating Activities",
+            "INVESTING": "Net Cash Flows from Investing Activities",
+            "FINANCING": "Net Cash Flows from Financing Activities",
+        }
         for section in ("OPERATING", "INVESTING", "FINANCING"):
             rows.append({
                 "account_code": section,
                 "account_name": names[section],
+                "account_name_en": names_en[section],
                 "section": section,
                 "current_amount": current_cash[section],
                 "comparative_amount": comparative_cash[section],
@@ -2284,6 +2431,7 @@ def ifrs_statement(
         rows.append({
             "account_code": "NET_CHANGE",
             "account_name": "صافي التغير في النقدية وما في حكمها",
+            "account_name_en": "Net Change in Cash and Cash Equivalents",
             "section": "TOTAL",
             "current_amount": money(sum(current_cash.values())),
             "comparative_amount": money(sum(comparative_cash.values())),
@@ -2317,7 +2465,7 @@ def consolidated_trial_balance(user: Annotated[dict[str, Any], Depends(get_curre
     require_group_admin(user)
     with pool.connection() as conn:
         rows = conn.execute(
-            """SELECT ga.account_code, ga.account_name, c.company_code,
+            """SELECT ga.account_code, ga.account_name, ga.account_name_en, c.company_code,
                       SUM(e.debit_amount-e.credit_amount)::NUMERIC(20,4) AS net_balance
                FROM erp.journal_entries e
                JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
@@ -2330,7 +2478,7 @@ def consolidated_trial_balance(user: Annotated[dict[str, Any], Depends(get_curre
         ).fetchall()
     pivot: dict[str, dict[str, Any]] = {}
     for row in rows:
-        item = pivot.setdefault(row["account_code"], {"account_code": row["account_code"], "account_name": row["account_name"], "companies": {}, "consolidated_net": 0})
+        item = pivot.setdefault(row["account_code"], {"account_code": row["account_code"], "account_name": row["account_name"], "account_name_en": row["account_name_en"], "companies": {}, "consolidated_net": 0})
         amount = float(row["net_balance"])
         item["companies"][row["company_code"]] = amount
         item["consolidated_net"] += amount
