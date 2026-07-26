@@ -2002,6 +2002,224 @@ def consolidated_balance_sheet(
     }
 
 
+def previous_year_date(value: date) -> date:
+    return date(value.year - 1, value.month, min(value.day, calendar.monthrange(value.year - 1, value.month)[1]))
+
+
+@app.get("/api/ifrs-statement")
+def ifrs_statement(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    statement: Literal["INCOME", "POSITION", "EQUITY", "CASH_FLOW"],
+    date_from: date,
+    date_to: date,
+    company_id: UUID | None = None,
+    comparative_from: date | None = None,
+    comparative_to: date | None = None,
+) -> dict[str, Any]:
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="تاريخ البداية يجب أن يسبق تاريخ النهاية")
+    if company_id:
+        ensure_company_access(user, company_id)
+    else:
+        require_group_admin(user)
+    comparative_from = comparative_from or previous_year_date(date_from)
+    comparative_to = comparative_to or previous_year_date(date_to)
+    if comparative_from > comparative_to:
+        raise HTTPException(status_code=422, detail="فترة المقارنة غير صحيحة")
+
+    with pool.connection() as conn:
+        company = None
+        if company_id:
+            company = conn.execute(
+                """SELECT company_code, company_name, functional_currency
+                   FROM erp.companies WHERE group_id=%s AND company_id=%s""",
+                (user["group_id"], company_id),
+            ).fetchone()
+
+        def account_amounts(start: date, end: date, as_of: bool = False) -> list[dict[str, Any]]:
+            classes = ("ASSET", "LIABILITY", "EQUITY") if as_of else ("REVENUE", "EXPENSE")
+            date_sql = "v.posting_date<=%s" if as_of else "v.posting_date BETWEEN %s AND %s"
+            params: list[Any] = [user["group_id"], company_id, company_id]
+            params.extend([end] if as_of else [start, end])
+            params.append(list(classes))
+            return conn.execute(
+                f"""SELECT ga.account_code, ga.account_name, ga.account_class,
+                           SUM(e.debit_amount-e.credit_amount)::NUMERIC(20,4) AS net
+                    FROM erp.journal_entries e
+                    JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
+                    JOIN erp.accounts a ON a.account_id=e.account_id
+                    JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
+                    WHERE e.group_id=%s AND (%s::uuid IS NULL OR e.company_id=%s)
+                      AND v.status='POSTED' AND {date_sql}
+                      AND ga.account_class=ANY(%s)
+                    GROUP BY ga.group_account_id
+                    HAVING SUM(e.debit_amount)<>0 OR SUM(e.credit_amount)<>0
+                    ORDER BY ga.account_code""",
+                params,
+            ).fetchall()
+
+        def period_profit(start: date, end: date) -> Decimal:
+            row = conn.execute(
+                """SELECT COALESCE(SUM(
+                             CASE WHEN ga.account_class='REVENUE'
+                                  THEN e.credit_amount-e.debit_amount
+                                  ELSE e.debit_amount-e.credit_amount END
+                           ),0)::NUMERIC(20,4) AS amount
+                   FROM erp.journal_entries e
+                   JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
+                   JOIN erp.accounts a ON a.account_id=e.account_id
+                   JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
+                   WHERE e.group_id=%s AND (%s::uuid IS NULL OR e.company_id=%s)
+                     AND v.status='POSTED' AND v.posting_date BETWEEN %s AND %s
+                     AND ga.account_class IN ('REVENUE','EXPENSE')""",
+                (user["group_id"], company_id, company_id, start, end),
+            ).fetchone()
+            return money(row["amount"])
+
+        def cash_flow(start: date, end: date) -> dict[str, Decimal]:
+            rows = conn.execute(
+                """WITH voucher_cash AS (
+                     SELECT v.voucher_id,
+                            SUM(CASE WHEN ga.account_code LIKE '111%%' OR ga.account_code LIKE '112%%'
+                                     THEN e.debit_amount-e.credit_amount ELSE 0 END) AS cash_change,
+                            BOOL_OR(ga.account_code LIKE '12%%') AS has_investing,
+                            BOOL_OR(ga.account_code LIKE '22%%' OR ga.account_class='EQUITY') AS has_financing
+                     FROM erp.journal_vouchers v
+                     JOIN erp.journal_entries e ON e.voucher_id=v.voucher_id
+                     JOIN erp.accounts a ON a.account_id=e.account_id
+                     JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
+                     WHERE v.group_id=%s AND (%s::uuid IS NULL OR v.company_id=%s)
+                       AND v.status='POSTED' AND v.posting_date BETWEEN %s AND %s
+                     GROUP BY v.voucher_id
+                   )
+                   SELECT CASE WHEN has_investing THEN 'INVESTING'
+                               WHEN has_financing THEN 'FINANCING'
+                               ELSE 'OPERATING' END AS section,
+                          COALESCE(SUM(cash_change),0)::NUMERIC(20,4) AS amount
+                   FROM voucher_cash WHERE cash_change<>0 GROUP BY 1""",
+                (user["group_id"], company_id, company_id, start, end),
+            ).fetchall()
+            result = {"OPERATING": Decimal("0"), "INVESTING": Decimal("0"), "FINANCING": Decimal("0")}
+            for row in rows:
+                result[row["section"]] = money(row["amount"])
+            return result
+
+        current_source: list[dict[str, Any]] = []
+        comparative_source: list[dict[str, Any]] = []
+        current_profit = Decimal("0")
+        comparative_profit = Decimal("0")
+        current_cash: dict[str, Decimal] = {}
+        comparative_cash: dict[str, Decimal] = {}
+        if statement in ("INCOME", "POSITION"):
+            current_source = account_amounts(date_from, date_to, as_of=statement == "POSITION")
+            comparative_source = account_amounts(comparative_from, comparative_to, as_of=statement == "POSITION")
+            if statement == "POSITION":
+                current_profit = period_profit(date(date_to.year, 1, 1), date_to)
+                comparative_profit = period_profit(date(comparative_to.year, 1, 1), comparative_to)
+        elif statement == "EQUITY":
+            current_source = account_amounts(date_from, date_to, as_of=True)
+            comparative_source = account_amounts(comparative_from, comparative_to, as_of=True)
+            current_profit = period_profit(date_from, date_to)
+            comparative_profit = period_profit(comparative_from, comparative_to)
+        else:
+            current_cash = cash_flow(date_from, date_to)
+            comparative_cash = cash_flow(comparative_from, comparative_to)
+
+    rows: list[dict[str, Any]] = []
+    if statement in ("INCOME", "POSITION"):
+        current = {row["account_code"]: row for row in current_source}
+        comparative = {row["account_code"]: row for row in comparative_source}
+        for code in sorted(set(current) | set(comparative)):
+            base = current.get(code) or comparative[code]
+            account_class = base["account_class"]
+            current_net = Decimal(str(current.get(code, {}).get("net", 0)))
+            comparative_net = Decimal(str(comparative.get(code, {}).get("net", 0)))
+            sign = Decimal("-1") if account_class in ("LIABILITY", "EQUITY", "REVENUE") else Decimal("1")
+            section = account_class
+            if statement == "POSITION":
+                if account_class == "ASSET":
+                    section = "CURRENT_ASSET" if code.startswith("11") else "NON_CURRENT_ASSET"
+                elif account_class == "LIABILITY":
+                    section = "CURRENT_LIABILITY" if code.startswith("21") else "NON_CURRENT_LIABILITY"
+            rows.append({
+                "account_code": code,
+                "account_name": base["account_name"],
+                "section": section,
+                "current_amount": money(current_net * sign),
+                "comparative_amount": money(comparative_net * sign),
+            })
+        if statement == "POSITION":
+            rows.append({
+                "account_code": "CURRENT_RESULT",
+                "account_name": "نتيجة الفترة — أرباح / خسائر",
+                "section": "EQUITY",
+                "current_amount": current_profit,
+                "comparative_amount": comparative_profit,
+            })
+    elif statement == "EQUITY":
+        current = {row["account_code"]: row for row in current_source if row["account_class"] == "EQUITY"}
+        comparative = {row["account_code"]: row for row in comparative_source if row["account_class"] == "EQUITY"}
+        for code in sorted(set(current) | set(comparative)):
+            base = current.get(code) or comparative[code]
+            rows.append({
+                "account_code": code,
+                "account_name": base["account_name"],
+                "section": "EQUITY",
+                "current_amount": money(-Decimal(str(current.get(code, {}).get("net", 0)))),
+                "comparative_amount": money(-Decimal(str(comparative.get(code, {}).get("net", 0)))),
+            })
+        rows.append({
+            "account_code": "PERIOD_RESULT",
+            "account_name": "صافي ربح / خسارة الفترة",
+            "section": "EQUITY",
+            "current_amount": current_profit,
+            "comparative_amount": comparative_profit,
+        })
+    else:
+        names = {
+            "OPERATING": "صافي التدفقات النقدية من الأنشطة التشغيلية",
+            "INVESTING": "صافي التدفقات النقدية من الأنشطة الاستثمارية",
+            "FINANCING": "صافي التدفقات النقدية من الأنشطة التمويلية",
+        }
+        for section in ("OPERATING", "INVESTING", "FINANCING"):
+            rows.append({
+                "account_code": section,
+                "account_name": names[section],
+                "section": section,
+                "current_amount": current_cash[section],
+                "comparative_amount": comparative_cash[section],
+            })
+        rows.append({
+            "account_code": "NET_CHANGE",
+            "account_name": "صافي التغير في النقدية وما في حكمها",
+            "section": "TOTAL",
+            "current_amount": money(sum(current_cash.values())),
+            "comparative_amount": money(sum(comparative_cash.values())),
+        })
+
+    totals: dict[str, dict[str, Decimal]] = {}
+    for row in rows:
+        section = row["section"]
+        totals.setdefault(section, {"current": Decimal("0"), "comparative": Decimal("0")})
+        totals[section]["current"] = money(totals[section]["current"] + Decimal(str(row["current_amount"])))
+        totals[section]["comparative"] = money(totals[section]["comparative"] + Decimal(str(row["comparative_amount"])))
+    result = {
+        "statement": statement,
+        "consolidated": company_id is None,
+        "company": company,
+        "currency": company["functional_currency"] if company else "EGP",
+        "date_from": date_from,
+        "date_to": date_to,
+        "comparative_from": comparative_from,
+        "comparative_to": comparative_to,
+        "rows": rows,
+        "totals": totals,
+        "framework": "IAS 1 / IAS 7 presentation framework; IFRS 18 readiness",
+        "ifrs_note": "Generated from posted ledger balances. Final IFRS compliance depends on account mapping, estimates, disclosures and professional review.",
+    }
+    return result
+
+
 @app.get("/api/consolidated-trial-balance")
 def consolidated_trial_balance(user: Annotated[dict[str, Any], Depends(get_current_user)], as_of_date: date = Query(default_factory=date.today)) -> list[dict[str, Any]]:
     require_group_admin(user)
