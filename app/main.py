@@ -16,7 +16,7 @@ from uuid import UUID
 
 import jwt
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, EmailStr, Field
@@ -417,6 +417,31 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def enforce_role_permissions(request: Request, call_next):
+    """Enforce the assigned operational role before a write reaches an endpoint."""
+    if request.method in {"POST", "PATCH", "PUT", "DELETE"} and request.url.path.startswith("/api/") and request.url.path != "/api/auth/login":
+        authorization = request.headers.get("authorization", "")
+        if authorization.startswith("Bearer "):
+            try:
+                payload = jwt.decode(authorization.removeprefix("Bearer ").strip(), JWT_SECRET, algorithms=[ALGORITHM])
+                if not payload.get("is_group_admin"):
+                    role = payload.get("role_code", "VIEWER")
+                    if role in {"REVIEWER", "VIEWER"}:
+                        return JSONResponse(
+                            status_code=403,
+                            content={"detail": "هذه الصلاحية للعرض والمراجعة فقط / This role has read-only access"},
+                        )
+                    if role == "ACCOUNTANT" and request.method == "DELETE":
+                        return JSONResponse(
+                            status_code=403,
+                            content={"detail": "الحذف يتطلب صلاحية مدير مالي / Deletion requires Finance Manager access"},
+                        )
+            except jwt.PyJWTError:
+                pass
+    return await call_next(request)
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -609,6 +634,13 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=12)
     role_code: Literal["FINANCE_MANAGER", "ACCOUNTANT", "REVIEWER", "VIEWER"]
     company_id: UUID | None = None
+
+
+class UserUpdate(BaseModel):
+    full_name: str = Field(min_length=2, max_length=250)
+    role_code: Literal["FINANCE_MANAGER", "ACCOUNTANT", "REVIEWER", "VIEWER"]
+    company_id: UUID
+    password: str | None = Field(default=None, min_length=12)
 
 
 def get_current_user(authorization: Annotated[str | None, Header()] = None) -> dict[str, Any]:
@@ -1703,6 +1735,66 @@ def create_user(data: UserCreate, user: Annotated[dict[str, Any], Depends(get_cu
         audit(conn, user, "CREATE", "USER", row["user_id"], data.company_id, {"role": data.role_code})
         conn.commit()
     return row
+
+
+@app.patch("/api/users/{user_id}")
+def update_user(user_id: UUID, data: UserUpdate, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
+    require_group_admin(user)
+    with pool.connection() as conn:
+        target = conn.execute(
+            "SELECT user_id, is_group_admin FROM erp.app_users WHERE group_id=%s AND user_id=%s",
+            (user["group_id"], user_id),
+        ).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="المستخدم غير موجود")
+        if target["is_group_admin"]:
+            raise HTTPException(status_code=422, detail="لا يمكن تعديل حساب مدير المجموعة من هذه الشاشة")
+        company = conn.execute(
+            "SELECT 1 FROM erp.companies WHERE group_id=%s AND company_id=%s AND is_active=TRUE",
+            (user["group_id"], data.company_id),
+        ).fetchone()
+        if not company:
+            raise HTTPException(status_code=422, detail="الشركة غير موجودة")
+        if data.password:
+            row = conn.execute(
+                """UPDATE erp.app_users
+                   SET full_name=%s, role_code=%s, company_id=%s, password_hash=%s
+                   WHERE group_id=%s AND user_id=%s
+                   RETURNING user_id, full_name, email, role_code, company_id, is_active""",
+                (data.full_name, data.role_code, data.company_id, hash_password(data.password),
+                 user["group_id"], user_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """UPDATE erp.app_users
+                   SET full_name=%s, role_code=%s, company_id=%s
+                   WHERE group_id=%s AND user_id=%s
+                   RETURNING user_id, full_name, email, role_code, company_id, is_active""",
+                (data.full_name, data.role_code, data.company_id, user["group_id"], user_id),
+            ).fetchone()
+        audit(conn, user, "UPDATE", "USER", user_id, data.company_id, {"role": data.role_code})
+        conn.commit()
+    return row
+
+
+@app.delete("/api/users/{user_id}")
+def deactivate_user(user_id: UUID, user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, str]:
+    require_group_admin(user)
+    if user_id == user["user_id"]:
+        raise HTTPException(status_code=422, detail="لا يمكنك إيقاف حسابك الحالي")
+    with pool.connection() as conn:
+        target = conn.execute(
+            "SELECT user_id, company_id, is_group_admin FROM erp.app_users WHERE group_id=%s AND user_id=%s AND is_active=TRUE",
+            (user["group_id"], user_id),
+        ).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="المستخدم غير موجود أو موقوف")
+        if target["is_group_admin"]:
+            raise HTTPException(status_code=422, detail="لا يمكن إيقاف حساب مدير المجموعة")
+        conn.execute("UPDATE erp.app_users SET is_active=FALSE WHERE user_id=%s", (user_id,))
+        audit(conn, user, "DEACTIVATE", "USER", user_id, target["company_id"])
+        conn.commit()
+    return {"status": "deactivated"}
 
 
 @app.get("/api/trial-balance")
