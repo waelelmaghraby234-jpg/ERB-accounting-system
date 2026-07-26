@@ -1875,8 +1875,131 @@ def balance_sheet(user: Annotated[dict[str, Any], Depends(get_current_user)], co
                GROUP BY ga.account_class, a.account_id ORDER BY ga.account_class, a.local_account_code""",
             (user["group_id"], company_id, as_of_date),
         ).fetchall()
+        current_result = conn.execute(
+            """SELECT COALESCE(SUM(
+                         CASE WHEN ga.account_class='REVENUE'
+                              THEN e.credit_amount-e.debit_amount
+                              ELSE e.debit_amount-e.credit_amount END
+                       ),0)::NUMERIC(20,4) AS amount
+               FROM erp.journal_entries e
+               JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
+               JOIN erp.accounts a ON a.account_id=e.account_id
+               JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
+               WHERE e.group_id=%s AND e.company_id=%s AND v.status='POSTED'
+                 AND v.posting_date<=%s AND ga.account_class IN ('REVENUE','EXPENSE')""",
+            (user["group_id"], company_id, as_of_date),
+        ).fetchone()["amount"]
+    rows = list(rows)
+    if money(current_result) != 0:
+        rows.append({
+            "account_class": "EQUITY",
+            "account_code": "CURRENT_RESULT",
+            "account_name": "نتيجة الفترة — أرباح / خسائر",
+            "amount": money(current_result),
+        })
     totals = {c: money(sum(Decimal(str(r["amount"])) for r in rows if r["account_class"] == c)) for c in ("ASSET", "LIABILITY", "EQUITY")}
     return {"rows": rows, "totals": totals, "difference": money(totals["ASSET"]-totals["LIABILITY"]-totals["EQUITY"])}
+
+
+@app.get("/api/consolidated-income-statement")
+def consolidated_income_statement(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    date_from: date,
+    date_to: date,
+) -> dict[str, Any]:
+    require_group_admin(user)
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="تاريخ البداية يجب أن يسبق تاريخ النهاية")
+    with pool.connection() as conn:
+        rows = conn.execute(
+            """SELECT ga.account_class, ga.account_code, ga.account_name,
+                      CASE WHEN ga.account_class='REVENUE' THEN SUM(e.credit_amount-e.debit_amount)
+                           ELSE SUM(e.debit_amount-e.credit_amount) END::NUMERIC(20,4) AS amount
+               FROM erp.journal_entries e
+               JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
+               JOIN erp.accounts a ON a.account_id=e.account_id
+               JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
+               JOIN erp.companies c ON c.company_id=e.company_id
+               WHERE e.group_id=%s AND v.status='POSTED'
+                 AND v.posting_date BETWEEN %s AND %s
+                 AND ga.account_class IN ('REVENUE','EXPENSE')
+                 AND c.is_active IN (TRUE,FALSE)
+               GROUP BY ga.group_account_id
+               HAVING SUM(e.debit_amount)<>0 OR SUM(e.credit_amount)<>0
+               ORDER BY ga.account_class DESC, ga.account_code""",
+            (user["group_id"], date_from, date_to),
+        ).fetchall()
+    revenues = sum(Decimal(str(row["amount"])) for row in rows if row["account_class"] == "REVENUE")
+    expenses = sum(Decimal(str(row["amount"])) for row in rows if row["account_class"] == "EXPENSE")
+    return {
+        "rows": rows,
+        "total_revenue": money(revenues),
+        "total_expense": money(expenses),
+        "net_profit": money(revenues - expenses),
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+
+
+@app.get("/api/consolidated-balance-sheet")
+def consolidated_balance_sheet(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    as_of_date: date,
+) -> dict[str, Any]:
+    require_group_admin(user)
+    with pool.connection() as conn:
+        rows = conn.execute(
+            """SELECT ga.account_class, ga.account_code, ga.account_name,
+                      CASE WHEN ga.account_class='ASSET' THEN SUM(e.debit_amount-e.credit_amount)
+                           ELSE SUM(e.credit_amount-e.debit_amount) END::NUMERIC(20,4) AS amount
+               FROM erp.journal_entries e
+               JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
+               JOIN erp.accounts a ON a.account_id=e.account_id
+               JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
+               JOIN erp.companies c ON c.company_id=e.company_id
+               WHERE e.group_id=%s AND v.status='POSTED' AND v.posting_date<=%s
+                 AND ga.account_class IN ('ASSET','LIABILITY','EQUITY')
+                 AND c.is_active IN (TRUE,FALSE)
+               GROUP BY ga.group_account_id
+               HAVING SUM(e.debit_amount)<>0 OR SUM(e.credit_amount)<>0
+               ORDER BY ga.account_class, ga.account_code""",
+            (user["group_id"], as_of_date),
+        ).fetchall()
+        current_result = conn.execute(
+            """SELECT COALESCE(SUM(
+                         CASE WHEN ga.account_class='REVENUE'
+                              THEN e.credit_amount-e.debit_amount
+                              ELSE e.debit_amount-e.credit_amount END
+                       ),0)::NUMERIC(20,4) AS amount
+               FROM erp.journal_entries e
+               JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
+               JOIN erp.accounts a ON a.account_id=e.account_id
+               JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
+               WHERE e.group_id=%s AND v.status='POSTED' AND v.posting_date<=%s
+                 AND ga.account_class IN ('REVENUE','EXPENSE')""",
+            (user["group_id"], as_of_date),
+        ).fetchone()["amount"]
+    rows = list(rows)
+    if money(current_result) != 0:
+        rows.append({
+            "account_class": "EQUITY",
+            "account_code": "CURRENT_RESULT",
+            "account_name": "نتيجة الفترة المجمعة — أرباح / خسائر",
+            "amount": money(current_result),
+        })
+    totals = {
+        account_class: money(sum(
+            Decimal(str(row["amount"]))
+            for row in rows if row["account_class"] == account_class
+        ))
+        for account_class in ("ASSET", "LIABILITY", "EQUITY")
+    }
+    return {
+        "rows": rows,
+        "totals": totals,
+        "difference": money(totals["ASSET"] - totals["LIABILITY"] - totals["EQUITY"]),
+        "as_of_date": as_of_date,
+    }
 
 
 @app.get("/api/consolidated-trial-balance")
