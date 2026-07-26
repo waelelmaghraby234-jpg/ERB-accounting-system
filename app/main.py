@@ -431,6 +431,10 @@ class CompanyCreate(BaseModel):
     functional_currency: str = Field(default="EGP", min_length=3, max_length=3)
 
 
+class CompanyUpdate(BaseModel):
+    company_name: str = Field(min_length=1, max_length=250)
+
+
 class GroupAccountCreate(BaseModel):
     account_code: str = Field(min_length=1, max_length=50)
     account_name: str = Field(min_length=1, max_length=250)
@@ -742,6 +746,62 @@ def create_company(data: CompanyCreate, user: Annotated[dict[str, Any], Depends(
         audit(conn, user, "CREATE", "COMPANY", row["company_id"], row["company_id"])
         conn.commit()
     return row
+
+
+@app.patch("/api/companies/{company_id}")
+def update_company(
+    company_id: UUID,
+    data: CompanyUpdate,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    require_group_admin(user)
+    with pool.connection() as conn:
+        row = conn.execute(
+            """UPDATE erp.companies
+               SET company_name=%s, legal_name=%s
+               WHERE group_id=%s AND company_id=%s AND is_active=TRUE
+               RETURNING company_id, company_code, company_name, company_kind,
+                         parent_company_id, ownership_percent, functional_currency""",
+            (data.company_name.strip(), data.company_name.strip(), user["group_id"], company_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="الشركة غير موجودة")
+        audit(conn, user, "UPDATE", "COMPANY", company_id, company_id, {"company_name": data.company_name.strip()})
+        conn.commit()
+    return row
+
+
+@app.delete("/api/companies/{company_id}", status_code=204)
+def delete_company(
+    company_id: UUID,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> None:
+    require_group_admin(user)
+    with pool.connection() as conn:
+        company = conn.execute(
+            """SELECT company_kind, company_name
+               FROM erp.companies
+               WHERE group_id=%s AND company_id=%s AND is_active=TRUE""",
+            (user["group_id"], company_id),
+        ).fetchone()
+        if not company:
+            raise HTTPException(status_code=404, detail="الشركة غير موجودة")
+        if company["company_kind"] == "HOLDING":
+            raise HTTPException(status_code=422, detail="لا يمكن حذف الشركة القابضة الرئيسية")
+        child = conn.execute(
+            """SELECT 1 FROM erp.companies
+               WHERE group_id=%s AND parent_company_id=%s AND is_active=TRUE LIMIT 1""",
+            (user["group_id"], company_id),
+        ).fetchone()
+        if child:
+            raise HTTPException(status_code=422, detail="لا يمكن حذف شركة لها شركات تابعة نشطة")
+        conn.execute(
+            """UPDATE erp.companies SET is_active=FALSE
+               WHERE group_id=%s AND company_id=%s""",
+            (user["group_id"], company_id),
+        )
+        audit(conn, user, "DEACTIVATE", "COMPANY", company_id, company_id, {"company_name": company["company_name"]})
+        conn.commit()
 
 
 @app.get("/api/group-accounts")
@@ -1678,6 +1738,103 @@ def general_ledger(user: Annotated[dict[str, Any], Depends(get_current_user)], c
                ORDER BY v.posting_date, v.created_at, e.line_no""",
             (user["group_id"], company_id, account_id, date_from, date_to),
         ).fetchall()
+
+
+@app.get("/api/general-ledger-range")
+def general_ledger_range(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    company_id: UUID,
+    account_from: str,
+    account_to: str,
+    date_from: date,
+    date_to: date,
+) -> dict[str, Any]:
+    ensure_company_access(user, company_id)
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="تاريخ البداية يجب أن يسبق تاريخ النهاية")
+    if account_from > account_to:
+        raise HTTPException(status_code=422, detail="الحساب من يجب أن يسبق الحساب إلى")
+    with pool.connection() as conn:
+        company = conn.execute(
+            """SELECT company_code, company_name, functional_currency
+               FROM erp.companies WHERE group_id=%s AND company_id=%s""",
+            (user["group_id"], company_id),
+        ).fetchone()
+        accounts = conn.execute(
+            """SELECT account_id, local_account_code, local_account_name
+               FROM erp.accounts
+               WHERE group_id=%s AND company_id=%s AND is_active=TRUE
+                 AND local_account_code BETWEEN %s AND %s
+               ORDER BY local_account_code""",
+            (user["group_id"], company_id, account_from, account_to),
+        ).fetchall()
+        if not accounts:
+            raise HTTPException(status_code=404, detail="لا توجد حسابات في النطاق المحدد")
+        account_ids = [row["account_id"] for row in accounts]
+        openings = conn.execute(
+            """SELECT e.account_id, COALESCE(SUM(e.debit_amount-e.credit_amount),0)::NUMERIC(20,4) AS opening_balance
+               FROM erp.journal_entries e
+               JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
+               WHERE e.group_id=%s AND e.company_id=%s AND e.account_id=ANY(%s)
+                 AND v.status='POSTED' AND v.posting_date<%s
+               GROUP BY e.account_id""",
+            (user["group_id"], company_id, account_ids, date_from),
+        ).fetchall()
+        entries = conn.execute(
+            """SELECT e.account_id, v.posting_date, v.voucher_no, v.source_module,
+                      COALESCE(e.entry_description, v.description, '') AS description,
+                      e.debit_amount, e.credit_amount, v.created_at, e.line_no
+               FROM erp.journal_entries e
+               JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
+               WHERE e.group_id=%s AND e.company_id=%s AND e.account_id=ANY(%s)
+                 AND v.status='POSTED' AND v.posting_date BETWEEN %s AND %s
+               ORDER BY e.account_id, v.posting_date, v.created_at, e.line_no""",
+            (user["group_id"], company_id, account_ids, date_from, date_to),
+        ).fetchall()
+
+    opening_map = {row["account_id"]: money(row["opening_balance"]) for row in openings}
+    entry_map: dict[UUID, list[dict[str, Any]]] = {}
+    for entry in entries:
+        entry_map.setdefault(entry["account_id"], []).append(entry)
+    report_accounts: list[dict[str, Any]] = []
+    total_debit = Decimal("0")
+    total_credit = Decimal("0")
+    for account in accounts:
+        running = opening_map.get(account["account_id"], Decimal("0"))
+        lines: list[dict[str, Any]] = []
+        for entry in entry_map.get(account["account_id"], []):
+            debit = money(entry["debit_amount"])
+            credit = money(entry["credit_amount"])
+            running = money(running + debit - credit)
+            total_debit += debit
+            total_credit += credit
+            lines.append({
+                "posting_date": entry["posting_date"],
+                "voucher_no": entry["voucher_no"],
+                "source_module": entry["source_module"],
+                "description": entry["description"],
+                "debit_amount": debit,
+                "credit_amount": credit,
+                "running_balance": running,
+            })
+        report_accounts.append({
+            "account_id": account["account_id"],
+            "account_code": account["local_account_code"],
+            "account_name": account["local_account_name"],
+            "opening_balance": opening_map.get(account["account_id"], Decimal("0")),
+            "closing_balance": running,
+            "entries": lines,
+        })
+    return {
+        "company": company,
+        "date_from": date_from,
+        "date_to": date_to,
+        "account_from": account_from,
+        "account_to": account_to,
+        "accounts": report_accounts,
+        "total_debit": money(total_debit),
+        "total_credit": money(total_credit),
+    }
 
 
 @app.get("/api/income-statement")
