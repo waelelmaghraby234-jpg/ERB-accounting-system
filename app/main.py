@@ -771,11 +771,11 @@ def update_company(
     return row
 
 
-@app.delete("/api/companies/{company_id}", status_code=204)
+@app.delete("/api/companies/{company_id}")
 def delete_company(
     company_id: UUID,
     user: Annotated[dict[str, Any], Depends(get_current_user)],
-) -> None:
+) -> dict[str, Any]:
     require_group_admin(user)
     with pool.connection() as conn:
         company = conn.execute(
@@ -802,6 +802,7 @@ def delete_company(
         )
         audit(conn, user, "DEACTIVATE", "COMPANY", company_id, company_id, {"company_name": company["company_name"]})
         conn.commit()
+    return {"status": "deleted", "company_id": str(company_id)}
 
 
 @app.get("/api/group-accounts")
