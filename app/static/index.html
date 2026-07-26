@@ -1,61 +1,360 @@
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title id="documentTitle">Holding ERP</title>
-<link rel="stylesheet" href="/static/style.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light" />
+  <title>نظام الحسابات السحابي | Holding ERP</title>
+  <style>
+    :root{
+      --navy:#0f1d2e;--navy-2:#172a40;--ink:#162334;--muted:#6b7787;
+      --bg:#f2f5f8;--card:#fff;--line:#e3e8ee;--brand:#0f766e;--brand-2:#0b5f59;
+      --gold:#b8892d;--danger:#b42318;--warning:#b54708;--success:#067647;
+      --shadow:0 10px 30px rgba(15,29,46,.08);--radius:16px;
+    }
+    *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Tahoma,Arial,sans-serif;background:var(--bg);color:var(--ink)}
+    button,input,select,textarea{font:inherit}button{cursor:pointer}.hidden{display:none!important}
+    .login-screen{min-height:100vh;display:grid;grid-template-columns:minmax(360px,520px) 1fr;background:linear-gradient(135deg,#edf3f5,#f8fafb)}
+    .login-panel{background:#fff;padding:54px 52px;display:flex;flex-direction:column;justify-content:center;box-shadow:10px 0 35px rgba(15,29,46,.08);z-index:2}
+    .login-visual{position:relative;overflow:hidden;background:linear-gradient(145deg,var(--navy),#183a4c 62%,#0f766e);display:flex;align-items:center;justify-content:center;padding:60px}
+    .login-visual:before,.login-visual:after{content:"";position:absolute;border-radius:50%;border:1px solid rgba(255,255,255,.12)}
+    .login-visual:before{width:600px;height:600px;left:-160px;bottom:-260px}.login-visual:after{width:420px;height:420px;right:-120px;top:-150px}
+    .visual-content{position:relative;color:#fff;max-width:650px}.visual-content h1{font-size:44px;line-height:1.35;margin:0 0 18px}.visual-content p{font-size:19px;line-height:2;color:#d9e6ea}
+    .feature-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:30px}.feature{padding:16px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);border-radius:13px}
+    .feature b{display:block;margin-bottom:6px}.feature span{font-size:13px;color:#c8d9df}
+    .brand-row{display:flex;align-items:center;gap:13px;margin-bottom:42px}.brand-mark{width:48px;height:48px;border-radius:13px;background:var(--navy);color:#fff;display:grid;place-items:center;font-weight:800;font-size:20px}.brand-title b{font-size:22px}.brand-title span{display:block;color:var(--muted);font-size:13px;margin-top:4px}
+    .login-panel h2{font-size:30px;margin:0 0 10px}.login-panel>.lead{color:var(--muted);line-height:1.8;margin:0 0 30px}
+    .field{display:flex;flex-direction:column;gap:8px;margin-bottom:17px}.field label{font-size:13px;font-weight:700;color:#344054}.field input,.field select,.field textarea{width:100%;border:1px solid #d0d7df;background:#fff;border-radius:10px;padding:12px 13px;outline:none;transition:.2s}.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(15,118,110,.11)}
+    .primary-btn,.secondary-btn,.ghost-btn,.danger-btn{border:0;border-radius:10px;padding:11px 16px;font-weight:700;transition:.2s}.primary-btn{background:var(--brand);color:#fff}.primary-btn:hover{background:var(--brand-2)}.primary-btn:disabled{opacity:.5;cursor:not-allowed}.secondary-btn{background:var(--navy);color:#fff}.ghost-btn{background:#eef2f5;color:var(--ink)}.danger-btn{background:#fee4e2;color:var(--danger)}
+    .login-btn{width:100%;padding:13px}.form-error{color:var(--danger);min-height:22px;font-size:13px;margin-top:10px}.login-note{font-size:12px;color:var(--muted);line-height:1.8;margin-top:20px;padding:12px;background:#f6f8fa;border-radius:10px}
+
+    .app-shell{min-height:100vh;display:grid;grid-template-columns:270px 1fr;grid-template-areas:"sidebar main";direction:ltr}
+    .sidebar{grid-area:sidebar;background:var(--navy);color:#fff;position:fixed;left:0;top:0;bottom:0;width:270px;padding:22px 16px;display:flex;flex-direction:column;z-index:30;direction:rtl;overflow:auto}
+    .sidebar-brand{display:flex;align-items:center;gap:11px;padding:3px 8px 24px;border-bottom:1px solid rgba(255,255,255,.09)}.sidebar-brand .brand-mark{background:#fff;color:var(--navy);width:43px;height:43px}.sidebar-brand b{font-size:18px}.sidebar-brand span{display:block;color:#9fb0c3;font-size:11px;margin-top:4px}
+    .nav-label{font-size:10px;letter-spacing:.5px;color:#8195aa;margin:25px 11px 9px}.nav-menu{display:flex;flex-direction:column;gap:5px}.nav-item{border:0;background:transparent;color:#c5d0dc;text-align:right;padding:11px 12px;border-radius:10px;display:flex;align-items:center;gap:11px;font-weight:700}.nav-item:hover{background:rgba(255,255,255,.07);color:#fff}.nav-item.active{background:var(--brand);color:#fff}.nav-icon{width:25px;text-align:center;font-size:17px}
+    .sidebar-footer{margin-top:auto;padding-top:18px;border-top:1px solid rgba(255,255,255,.09)}.user-mini{display:flex;gap:10px;align-items:center;padding:8px}.avatar{width:38px;height:38px;border-radius:50%;background:#27405c;display:grid;place-items:center;font-weight:800}.user-mini b{font-size:12px;display:block;max-width:165px;overflow:hidden;text-overflow:ellipsis}.user-mini span{font-size:10px;color:#98a9bb}
+    .logout{width:100%;margin-top:8px;border:1px solid rgba(255,255,255,.13);background:transparent;color:#dce4ec;border-radius:9px;padding:9px}
+    .main-area{grid-area:main;margin-left:270px;min-width:0;direction:rtl}.topbar{height:72px;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;position:sticky;top:0;z-index:20}.page-heading h1{font-size:22px;margin:0}.page-heading p{font-size:12px;color:var(--muted);margin:5px 0 0}.top-actions{display:flex;gap:10px;align-items:center}.company-switch{min-width:230px;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff}.menu-toggle{display:none;border:0;background:#eef2f5;border-radius:9px;padding:9px 12px}
+    .content{padding:26px;max-width:1600px;margin:auto}.page{display:none}.page.active{display:block}.page-toolbar{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:18px}.page-toolbar h2{margin:0;font-size:21px}.page-toolbar p{margin:6px 0 0;color:var(--muted);font-size:13px}.toolbar-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}.stat-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:19px;box-shadow:var(--shadow);position:relative;overflow:hidden}.stat-card:after{content:"";position:absolute;right:0;top:0;bottom:0;width:4px;background:var(--brand)}.stat-card .stat-label{font-size:12px;color:var(--muted);font-weight:700}.stat-card .stat-number{font-size:30px;font-weight:800;margin:9px 0 4px}.stat-card .stat-foot{font-size:11px;color:#8b97a4}
+    .grid-2{display:grid;grid-template-columns:1.2fr .8fr;gap:18px}.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px}.card-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}.card-title h3{font-size:17px;margin:0}.card-title span{font-size:11px;color:var(--muted)}
+    .quick-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.quick-link{border:1px solid var(--line);border-radius:12px;background:#fff;padding:15px;text-align:right}.quick-link:hover{border-color:var(--brand);background:#f4fbfa}.quick-link b{display:block;margin-bottom:5px}.quick-link span{font-size:11px;color:var(--muted)}
+    .onboarding{border:1px dashed #b7c4cf;background:#f8fafb;border-radius:14px;padding:21px}.onboarding h3{margin:0 0 8px}.onboarding p{color:var(--muted);font-size:13px;line-height:1.8}.steps{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}.step-pill{background:#fff;border:1px solid var(--line);padding:9px 11px;border-radius:20px;font-size:11px}.step-pill.done{background:#ecfdf3;color:var(--success);border-color:#abefc6}
+    .table-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}.table-wrap{overflow:auto}.data-table{width:100%;border-collapse:collapse;min-width:760px}.data-table th{background:#f7f9fb;color:#526070;font-size:11px;text-align:right;padding:12px 14px;border-bottom:1px solid var(--line);white-space:nowrap}.data-table td{padding:13px 14px;border-bottom:1px solid #eef1f4;font-size:12px;white-space:nowrap}.data-table tr:hover td{background:#fbfcfd}.empty-cell{text-align:center!important;color:var(--muted);padding:40px!important}.code{font-family:Consolas,monospace;direction:ltr;display:inline-block}.money{font-family:Consolas,monospace;direction:ltr;text-align:left}.badge{display:inline-flex;align-items:center;border-radius:20px;padding:5px 9px;font-size:10px;font-weight:700}.badge-green{background:#ecfdf3;color:var(--success)}.badge-blue{background:#eaf2ff;color:#175cd3}.badge-gray{background:#f2f4f7;color:#475467}.badge-orange{background:#fff4e5;color:var(--warning)}.badge-red{background:#fee4e2;color:var(--danger)}
+    .filter-bar{background:#fff;border:1px solid var(--line);border-radius:13px;padding:13px;display:flex;align-items:end;gap:11px;margin-bottom:14px;flex-wrap:wrap}.filter-bar .field{margin:0;min-width:190px}.filter-bar .field.small{min-width:140px}.filter-bar label{font-size:10px}.filter-bar input,.filter-bar select{padding:9px}
+    .form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:15px}.form-grid .full{grid-column:1/-1}.check-row{display:flex;align-items:center;gap:8px;margin-top:8px}.check-row input{width:auto}.hint{font-size:11px;color:var(--muted);line-height:1.7}
+    .modal-overlay{position:fixed;inset:0;background:rgba(15,29,46,.48);display:none;align-items:center;justify-content:center;padding:20px;z-index:100}.modal-overlay.open{display:flex}.modal{background:#fff;width:min(720px,100%);max-height:90vh;overflow:auto;border-radius:18px;box-shadow:0 25px 70px rgba(15,29,46,.28)}.modal-header{display:flex;align-items:center;justify-content:space-between;padding:19px 22px;border-bottom:1px solid var(--line)}.modal-header h3{margin:0}.modal-close{border:0;background:#eef2f5;width:34px;height:34px;border-radius:9px}.modal-body{padding:22px}.modal-footer{display:flex;gap:9px;justify-content:flex-start;padding:16px 22px;border-top:1px solid var(--line);background:#fafbfc}
+    .voucher-head{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:18px}.entries-table{min-width:1100px}.entries-table input,.entries-table select{width:100%;border:1px solid #d5dce4;border-radius:8px;padding:8px;font-size:11px}.entries-table .amount-input{direction:ltr;text-align:left}.line-delete{border:0;background:#fee4e2;color:var(--danger);border-radius:7px;padding:7px 10px}.totals-bar{display:flex;justify-content:flex-end;gap:28px;background:#f7f9fb;padding:14px 18px;border-top:1px solid var(--line);font-size:13px}.balance-ok{color:var(--success);font-weight:700}.balance-bad{color:var(--danger);font-weight:700}
+    .report-summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px}.report-chip{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:12px}.report-chip b{font-family:Consolas,monospace;margin-right:7px}
+    .toast-container{position:fixed;top:85px;right:28px;z-index:200;display:flex;flex-direction:column;gap:9px}.toast{min-width:300px;max-width:430px;background:#fff;border:1px solid var(--line);box-shadow:var(--shadow);padding:13px 15px;border-radius:11px;font-size:12px;animation:slideIn .25s ease}.toast.success{border-right:4px solid var(--success)}.toast.error{border-right:4px solid var(--danger)}.toast.info{border-right:4px solid #175cd3}@keyframes slideIn{from{transform:translateX(30px);opacity:0}to{transform:none;opacity:1}}
+    .loading{display:inline-block;width:17px;height:17px;border:2px solid #d5e3e1;border-top-color:var(--brand);border-radius:50%;animation:spin .7s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+    .api-note{background:#fff8eb;color:#7a4d05;border:1px solid #fedf89;padding:13px;border-radius:10px;font-size:12px;line-height:1.8}
+    @media(max-width:1100px){.stats-grid{grid-template-columns:repeat(2,1fr)}.grid-2{grid-template-columns:1fr}.voucher-head{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:850px){.login-screen{grid-template-columns:1fr}.login-visual{display:none}.login-panel{min-height:100vh}.app-shell{display:block}.sidebar{transform:translateX(-100%);transition:.25s}.sidebar.open{transform:translateX(0)}.main-area{margin-left:0}.menu-toggle{display:block}.topbar{padding:0 15px}.company-switch{min-width:150px}.content{padding:16px}.stats-grid{grid-template-columns:1fr 1fr}.form-grid{grid-template-columns:1fr}.voucher-head{grid-template-columns:1fr}.feature-grid{grid-template-columns:1fr}}
+    @media(max-width:560px){.login-panel{padding:34px 22px}.stats-grid{grid-template-columns:1fr}.top-actions .company-switch{display:none}.quick-grid{grid-template-columns:1fr}.page-toolbar{align-items:flex-start;flex-direction:column}.toast-container{right:12px;left:12px}.toast{min-width:auto}.form-grid{display:block}}
+  </style>
 </head>
 <body>
-<section id="loginScreen" class="login">
- <div class="login-card">
-  <div class="login-brand"><h1 id="loginGroupName">Holding ERP</h1><p>نظام حسابات سحابي متعدد الشركات لإدارة الحسابات العامة والعملاء والموردين والبنوك والأصول.</p><div class="login-features"><span>✓ دليل حسابات رئيسي وفرعي</span><span>✓ أرصدة افتتاحية وقيود مسودة</span><span>✓ عملات وأسعار صرف وإعادة تقييم</span><span>✓ صلاحيات ومعاينة طباعة</span></div></div>
-  <form id="loginForm" class="login-form"><h2>تسجيل الدخول</h2><div class="field"><label>البريد الإلكتروني</label><input id="loginEmail" type="email" required></div><div class="field"><label>كلمة المرور</label><input id="loginPassword" type="password" required></div><button class="btn btn-primary" style="width:100%">دخول النظام</button><p id="loginError" class="danger-text"></p></form>
- </div>
-</section>
-<div id="app" class="app hidden">
-<aside id="side" class="side"><div class="brand"><div class="brand-logo">ERP</div><div><b id="sideGroupName">Holding ERP</b><small>Finance Cloud</small></div></div>
- <div class="nav-title">الرئيسية</div><nav class="nav"><button class="active" data-page="dashboard">لوحة التحكم</button></nav>
- <div class="nav-title">الإعدادات</div><nav class="nav"><button data-page="companies">الشركات</button><button data-page="periods">السنوات والفترات</button><button data-page="chart">دليل الحسابات</button><button data-page="currencies">العملات وأسعار الصرف</button><button data-page="users">المستخدمون والصلاحيات</button></nav>
- <div class="nav-title">الحسابات العامة</div><nav class="nav"><button data-page="opening">الأرصدة الافتتاحية</button><button data-page="vouchers">قيود اليومية</button><button data-page="reports">التقارير المالية</button><button data-page="consolidated">التقارير المجمعة</button></nav>
- <div class="nav-title">العملاء والموردون</div><nav class="nav"><button data-page="customers">العملاء</button><button data-page="vendors">الموردون</button><button data-page="sales">فواتير المبيعات</button><button data-page="purchases">فواتير المشتريات</button></nav>
- <div class="nav-title">الخزينة والأصول</div><nav class="nav"><button data-page="banks">البنوك والقبض والصرف</button><button data-page="assets">الأصول الثابتة</button><button data-page="audit">سجل التدقيق</button></nav>
- <div class="side-footer"><b id="userEmail">—</b><small id="userRole">—</small><button id="logout" class="btn btn-light" style="width:100%;margin-top:10px">تسجيل الخروج</button></div>
-</aside>
-<main class="main"><header class="top"><div style="display:flex;gap:12px;align-items:center"><button id="menu" class="btn btn-light menu">☰</button><div><h1 id="pageTitle">لوحة التحكم</h1><p id="pageSub">نظرة عامة على المجموعة</p></div></div><div class="top-actions"><button id="exportPageExcel" class="btn btn-success btn-small">Excel</button><button id="printPagePdf" class="btn btn-light btn-small">PDF / طباعة</button><select id="companySelect"><option value="">اختر الشركة</option></select></div></header>
-<div class="content">
-<section id="page-dashboard" class="page active"><div class="toolbar"><div><h2>لوحة التحكم</h2><p>مؤشرات المجموعة والشركة المختارة.</p></div></div><div class="stats"><div class="stat"><label>شركات المجموعة</label><b id="dCompanies">0</b></div><div class="stat"><label>المستخدمون</label><b id="dUsers">0</b></div><div class="stat"><label>المبيعات EGP</label><b id="dSales">0</b></div><div class="stat"><label>المشتريات EGP</label><b id="dPurchases">0</b></div></div><div id="activeCompanyInfo" class="card"></div></section>
+  <div id="toastContainer" class="toast-container"></div>
 
-<section id="page-companies" class="page"><div class="toolbar"><div><h2>شركات المجموعة</h2><p>يمكن تعديل الأسماء. في وضع التجربة يمكن أيضاً تصفير شركة مع الاحتفاظ بالمستخدمين وشجرة الحسابات وسجل التدقيق.</p></div><div class="actions"><button id="editGroupProfile" class="btn btn-light">تعديل اسم المجموعة</button><button id="newCompany" class="btn btn-primary">+ شركة</button></div></div><div class="card table-wrap"><table id="companiesTable" class="table"><thead><tr><th>الكود</th><th>الشركة</th><th>النوع</th><th>الملكية</th><th>العملة</th><th>الإجراءات</th></tr></thead><tbody id="companiesBody"></tbody></table></div></section>
+  <section id="loginScreen" class="login-screen">
+    <div class="login-panel">
+      <div class="brand-row"><div class="brand-mark">ERP</div><div class="brand-title"><b>Holding ERP Cloud</b><span>نظام الحسابات العامة متعدد الشركات</span></div></div>
+      <h2>تسجيل الدخول</h2>
+      <p class="lead">أدخل بيانات حساب مدير المجموعة للوصول إلى الشركات والقيود والتقارير المالية.</p>
+      <form id="loginForm">
+        <div class="field"><label>البريد الإلكتروني</label><input id="loginEmail" type="email" autocomplete="username" required placeholder="admin@company.com"></div>
+        <div class="field"><label>كلمة المرور</label><input id="loginPassword" type="password" autocomplete="current-password" required placeholder="••••••••••••"></div>
+        <button id="loginButton" class="primary-btn login-btn" type="submit">دخول إلى النظام</button>
+        <div id="loginError" class="form-error"></div>
+      </form>
+      <div class="login-note">بيانات الدخول هي قيم <b>ADMIN_EMAIL</b> و<b>ADMIN_PASSWORD</b> المحفوظة في Render، وليست بيانات Supabase.</div>
+    </div>
+    <div class="login-visual">
+      <div class="visual-content">
+        <h1>إدارة مالية مركزية لكل شركات المجموعة</h1>
+        <p>دليل حسابات موحّد، عزل كامل لكل شركة، قيود يومية متوازنة، وميزان مراجعة مجمّع في منصة سحابية واحدة.</p>
+        <div class="feature-grid">
+          <div class="feature"><b>Multi-Company</b><span>إدارة القابضة والشركات التابعة</span></div>
+          <div class="feature"><b>General Ledger</b><span>دليل حسابات وقيود يومية</span></div>
+          <div class="feature"><b>Intercompany</b><span>حسابات ومعاملات الشركات الشقيقة</span></div>
+          <div class="feature"><b>Consolidation</b><span>ميزان مراجعة مجمّع للمجموعة</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
 
-<section id="page-periods" class="page"><div class="toolbar"><div><h2>السنوات والفترات المالية</h2><p>فتح وإغلاق الفترات لكل شركة.</p></div><button id="newFiscalYear" class="btn btn-primary">+ سنة مالية</button></div><div class="grid2"><div class="card"><h3>السنوات</h3><table class="table"><thead><tr><th>السنة</th><th>من</th><th>إلى</th><th>الحالة</th></tr></thead><tbody id="yearsBody"></tbody></table></div><div class="card"><h3>الفترات</h3><div class="table-wrap"><table class="table"><thead><tr><th>الفترة</th><th>من</th><th>إلى</th><th>الحالة</th><th></th></tr></thead><tbody id="periodsBody"></tbody></table></div></div></div></section>
+  <div id="appShell" class="app-shell hidden">
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-brand"><div class="brand-mark">ERP</div><div><b>Holding ERP</b><span>Cloud Accounting</span></div></div>
+      <div class="nav-label">الرئيسية</div>
+      <nav class="nav-menu">
+        <button class="nav-item active" data-page="dashboard"><span class="nav-icon">⌂</span>لوحة التحكم</button>
+      </nav>
+      <div class="nav-label">إدارة المجموعة</div>
+      <nav class="nav-menu">
+        <button class="nav-item" data-page="companies"><span class="nav-icon">▦</span>الشركات</button>
+        <button class="nav-item" data-page="groupAccounts"><span class="nav-icon">☷</span>دليل حسابات المجموعة</button>
+        <button class="nav-item" data-page="companyAccounts"><span class="nav-icon">≡</span>حسابات الشركة</button>
+      </nav>
+      <div class="nav-label">الحسابات العامة</div>
+      <nav class="nav-menu">
+        <button class="nav-item" data-page="voucher"><span class="nav-icon">✎</span>قيد يومية جديد</button>
+        <button class="nav-item" data-page="openingBalances"><span class="nav-icon">⇩</span>الأرصدة الافتتاحية</button>
+        <button class="nav-item" data-page="trialBalance"><span class="nav-icon">▤</span>ميزان المراجعة</button>
+        <button class="nav-item" data-page="consolidated"><span class="nav-icon">◫</span>الميزان المجمّع</button>
+      </nav>
+      <div class="nav-label">النظام</div>
+      <nav class="nav-menu">
+        <button class="nav-item" data-page="profile"><span class="nav-icon">●</span>بيانات المستخدم</button>
+        <a href="/docs" target="_blank" class="nav-item" style="text-decoration:none"><span class="nav-icon">?</span>واجهة المطور API</a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-mini"><div id="sideAvatar" class="avatar">A</div><div><b id="sideEmail">—</b><span>مدير المجموعة</span></div></div>
+        <button id="logoutButton" class="logout">تسجيل الخروج</button>
+      </div>
+    </aside>
 
-<section id="page-chart" class="page"><div class="toolbar"><div><h2>دليل الحسابات</h2><p>شجرة متعددة المستويات: رئيسي، رئيسي فرعي، ثم حساب حركة. الحسابات الرئيسية لا تقبل قيوداً.</p></div><div class="actions"><button id="applyProfessionalChart" class="btn btn-success">إضافة النموذج المحاسبي التفصيلي</button><button id="newGroupAccount" class="btn btn-primary">+ حساب مجموعة</button><button id="newCompanyAccount" class="btn btn-light">+ حساب شركة</button></div></div><div class="tabs"><button class="active" data-chart-tab="group">دليل المجموعة</button><button data-chart-tab="company">حسابات الشركة</button></div><div class="card table-wrap"><table id="chartTable" class="table"><thead id="chartHead"></thead><tbody id="chartBody"></tbody></table></div></section>
+    <main class="main-area">
+      <header class="topbar">
+        <div style="display:flex;align-items:center;gap:12px"><button id="menuToggle" class="menu-toggle">☰</button><div class="page-heading"><h1 id="topTitle">لوحة التحكم</h1><p id="topSubtitle">نظرة عامة على النظام المالي</p></div></div>
+        <div class="top-actions"><select id="topCompanySelect" class="company-switch"><option value="">اختر الشركة</option></select></div>
+      </header>
 
-<section id="page-currencies" class="page"><div class="toolbar"><div><h2>العملات وأسعار الصرف</h2><p>سعر الصرف يعني: وحدة واحدة من العملة = عدد من الجنيه المصري.</p></div><div class="actions"><button id="newCurrency" class="btn btn-light">+ عملة</button><button id="newRate" class="btn btn-primary">+ سعر صرف</button></div></div><div class="grid2"><div class="card"><h3>العملات</h3><table class="table"><thead><tr><th>الكود</th><th>الاسم</th><th>الرمز</th><th>أساسية</th></tr></thead><tbody id="currenciesBody"></tbody></table></div><div class="card"><h3>آخر أسعار الصرف</h3><div class="table-wrap"><table class="table"><thead><tr><th>التاريخ</th><th>العملة</th><th>النوع</th><th>السعر</th><th>النطاق</th></tr></thead><tbody id="ratesBody"></tbody></table></div></div></div></section>
+      <div class="content">
+        <section id="page-dashboard" class="page active">
+          <div id="onboardingBlock" class="onboarding hidden" style="margin-bottom:18px">
+            <h3>ابدأ إعداد النظام في 3 خطوات</h3><p>قاعدة البيانات تعمل الآن. أنشئ الشركة القابضة أولاً، ثم دليل حسابات المجموعة، ثم حسابات الشركة حتى تستطيع إدخال القيود.</p>
+            <div class="steps"><span id="stepCompany" class="step-pill">1. إنشاء الشركة القابضة</span><span id="stepGroupAccounts" class="step-pill">2. إنشاء دليل المجموعة</span><span id="stepCompanyAccounts" class="step-pill">3. ربط حسابات الشركة</span></div>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-label">شركات المجموعة</div><div id="statCompanies" class="stat-number">0</div><div class="stat-foot">قابضة وتابعة واستبعادات</div></div>
+            <div class="stat-card"><div class="stat-label">حسابات المجموعة</div><div id="statGroupAccounts" class="stat-number">0</div><div class="stat-foot">الدليل الموحد للدمج</div></div>
+            <div class="stat-card"><div class="stat-label">حسابات الشركة المختارة</div><div id="statCompanyAccounts" class="stat-number">0</div><div class="stat-foot">حسابات تشغيلية قابلة للقيد</div></div>
+            <div class="stat-card"><div class="stat-label">حالة النظام</div><div class="stat-number" style="font-size:22px;color:var(--success)">متصل</div><div class="stat-foot">PostgreSQL Cloud</div></div>
+          </div>
+          <div class="grid-2">
+            <div class="card"><div class="card-title"><h3>اختصارات سريعة</h3><span>ابدأ العملية المحاسبية</span></div><div class="quick-grid">
+              <button class="quick-link" data-go="companies"><b>إضافة شركة</b><span>القابضة أو شركة تابعة</span></button>
+              <button class="quick-link" data-go="groupAccounts"><b>دليل حسابات المجموعة</b><span>الأكواد الموحدة للمجموعة</span></button>
+              <button class="quick-link" data-go="voucher"><b>إدخال قيد يومية</b><span>مدين ودائن مع الترحيل</span></button>
+              <button class="quick-link" data-go="trialBalance"><b>عرض ميزان المراجعة</b><span>حتى تاريخ محدد</span></button>
+            </div></div>
+            <div class="card"><div class="card-title"><h3>الشركة النشطة</h3><span>يتم استخدامها في الشاشات</span></div><div id="activeCompanyCard"><p class="hint">لم يتم اختيار شركة بعد.</p></div></div>
+          </div>
+        </section>
 
-<section id="page-opening" class="page"><div class="toolbar"><div><h2>الأرصدة الافتتاحية</h2><p>تُحفظ كمسودة أولاً ويمكن تعديلها أو حذفها قبل الترحيل.</p></div><button id="newOpening" class="btn btn-primary">+ إدخال أرصدة افتتاحية</button></div><div class="card table-wrap"><table class="table"><thead><tr><th>رقم الدفعة</th><th>التاريخ</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="openingBody"></tbody></table></div></section>
+        <section id="page-companies" class="page">
+          <div class="page-toolbar"><div><h2>الشركات</h2><p>تعريف الشركة القابضة والشركات التابعة وكيان الاستبعادات.</p></div><div class="toolbar-actions"><button id="addCompanyBtn" class="primary-btn">+ شركة جديدة</button></div></div>
+          <div class="table-card"><div class="table-wrap"><table class="data-table"><thead><tr><th>الكود</th><th>اسم الشركة</th><th>النوع</th><th>الشركة الأم</th><th>الملكية</th><th>العملة</th></tr></thead><tbody id="companiesTbody"></tbody></table></div></div>
+        </section>
 
-<section id="page-vouchers" class="page"><div class="toolbar"><div><h2>قيود اليومية</h2><p>المسودة قابلة للتعديل والحذف. القيد المرحّل يُصحح بقيد عكس مع نسخة جديدة، مع إتاحة إرجاعه لمسودة في وضع الاختبار فقط.</p></div><button id="newVoucher" class="btn btn-primary">+ قيد جديد</button></div><div class="card table-wrap"><table class="table"><thead><tr><th>القيد</th><th>التاريخ</th><th>النوع</th><th>البيان</th><th>القيمة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="vouchersBody"></tbody></table></div></section>
+        <section id="page-groupAccounts" class="page">
+          <div class="page-toolbar"><div><h2>دليل حسابات المجموعة</h2><p>أكواد موحدة تستخدمها كل الشركات وتسهّل إعداد التقارير المجمعة.</p></div><div class="toolbar-actions"><button id="addGroupAccountBtn" class="primary-btn">+ حساب مجموعة</button></div></div>
+          <div class="filter-bar"><div class="field"><label>بحث بالكود أو الاسم</label><input id="groupAccountSearch" placeholder="مثال: 110000 أو النقدية"></div><div class="field small"><label>التصنيف</label><select id="groupAccountClassFilter"><option value="">الكل</option><option value="ASSET">الأصول</option><option value="LIABILITY">الالتزامات</option><option value="EQUITY">حقوق الملكية</option><option value="REVENUE">الإيرادات</option><option value="EXPENSE">المصروفات</option></select></div></div>
+          <div class="table-card"><div class="table-wrap"><table class="data-table"><thead><tr><th>الكود</th><th>اسم الحساب</th><th>التصنيف</th><th>الطبيعة</th><th>حساب متبادل</th><th>قابل للقيد</th></tr></thead><tbody id="groupAccountsTbody"></tbody></table></div></div>
+        </section>
 
-<section id="page-customers" class="page"><div class="toolbar"><div><h2>العملاء</h2><p>بيانات العملاء وحسابات المراقبة.</p></div><button class="btn btn-primary newParty" data-type="CUSTOMER">+ عميل</button></div><div class="card table-wrap"><table class="table"><thead><tr><th>الكود</th><th>الاسم</th><th>التسجيل الضريبي</th><th>الهاتف</th><th>حد الائتمان</th><th>شروط الدفع</th></tr></thead><tbody id="customersBody"></tbody></table></div></section>
-<section id="page-vendors" class="page"><div class="toolbar"><div><h2>الموردون</h2><p>بيانات الموردين وحسابات المراقبة.</p></div><button class="btn btn-primary newParty" data-type="VENDOR">+ مورد</button></div><div class="card table-wrap"><table class="table"><thead><tr><th>الكود</th><th>الاسم</th><th>التسجيل الضريبي</th><th>الهاتف</th><th>شروط الدفع</th></tr></thead><tbody id="vendorsBody"></tbody></table></div></section>
+        <section id="page-companyAccounts" class="page">
+          <div class="page-toolbar"><div><h2>حسابات الشركة</h2><p>الحسابات التشغيلية الخاصة بالشركة وربطها بدليل المجموعة.</p></div><div class="toolbar-actions"><button id="addCompanyAccountBtn" class="primary-btn">+ حساب للشركة</button></div></div>
+          <div class="filter-bar"><div class="field"><label>الشركة</label><select id="accountsCompanySelect"></select></div><div class="field"><label>بحث</label><input id="companyAccountSearch" placeholder="كود أو اسم الحساب"></div></div>
+          <div class="table-card"><div class="table-wrap"><table class="data-table"><thead><tr><th>الكود المحلي</th><th>اسم الحساب</th><th>كود المجموعة</th><th>حساب المجموعة</th><th>Intercompany</th></tr></thead><tbody id="companyAccountsTbody"></tbody></table></div></div>
+        </section>
 
-<section id="page-sales" class="page"><div class="toolbar"><div><h2>فواتير المبيعات</h2><p>فواتير متعددة العملات مع قيمة أصلية وقيمة بالعملة الأساسية.</p></div><button class="btn btn-primary newInvoice" data-type="SALES">+ فاتورة مبيعات</button></div><div class="card table-wrap"><table class="table"><thead><tr><th>الفاتورة</th><th>التاريخ</th><th>العميل</th><th>العملة</th><th>الإجمالي</th><th>EGP</th><th>الحالة</th><th></th></tr></thead><tbody id="salesBody"></tbody></table></div></section>
-<section id="page-purchases" class="page"><div class="toolbar"><div><h2>فواتير المشتريات</h2><p>فواتير الموردين متعددة العملات.</p></div><button class="btn btn-primary newInvoice" data-type="PURCHASE">+ فاتورة مشتريات</button></div><div class="card table-wrap"><table class="table"><thead><tr><th>الفاتورة</th><th>التاريخ</th><th>المورد</th><th>العملة</th><th>الإجمالي</th><th>EGP</th><th>الحالة</th><th></th></tr></thead><tbody id="purchasesBody"></tbody></table></div></section>
+        <section id="page-voucher" class="page">
+          <div class="page-toolbar"><div><h2>قيد يومية جديد</h2><p>أدخل سطور المدين والدائن، ثم رحّل القيد إلى دفتر الأستاذ.</p></div><div class="toolbar-actions"><button id="resetVoucherBtn" class="ghost-btn">قيد جديد</button><button id="saveVoucherBtn" class="primary-btn">حفظ وترحيل</button></div></div>
+          <div class="card">
+            <div class="voucher-head">
+              <div class="field"><label>الشركة</label><select id="voucherCompany"></select></div>
+              <div class="field"><label>رقم القيد</label><input id="voucherNo"></div>
+              <div class="field"><label>تاريخ المستند</label><input id="voucherDocumentDate" type="date"></div>
+              <div class="field"><label>تاريخ الترحيل</label><input id="voucherPostingDate" type="date"></div>
+              <div class="field" style="grid-column:1/-1"><label>البيان العام للقيد</label><input id="voucherDescription" placeholder="مثال: إثبات مصروفات التشغيل لشهر يوليو"></div>
+            </div>
+            <div class="table-wrap"><table class="data-table entries-table"><thead><tr><th>#</th><th style="min-width:220px">الحساب</th><th style="min-width:190px">البيان</th><th>مدين</th><th>دائن</th><th style="min-width:170px">الشركة المقابلة</th><th style="min-width:150px">مرجع Intercompany</th><th></th></tr></thead><tbody id="voucherLines"></tbody></table></div>
+            <div class="totals-bar"><span>إجمالي المدين: <b id="totalDebit" class="money">0.00</b></span><span>إجمالي الدائن: <b id="totalCredit" class="money">0.00</b></span><span id="balanceStatus" class="balance-bad">القيد غير متوازن</span></div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px;flex-wrap:wrap"><button id="addVoucherLineBtn" class="ghost-btn">+ إضافة سطر</button><label class="check-row"><input id="postImmediately" type="checkbox" checked> ترحيل القيد فوراً</label></div>
+          </div>
+        </section>
 
-<section id="page-banks" class="page"><div class="toolbar"><div><h2>البنوك والقبض والصرف</h2><p>حسابات بنكية متعددة العملات وإعادة تقييم الرصيد.</p></div><div class="actions"><button id="newBank" class="btn btn-light">+ حساب بنكي</button><button id="newCash" class="btn btn-primary">+ سند قبض/صرف</button><button id="revalueBanks" class="btn btn-warn">إعادة تقييم العملات</button></div></div><div class="grid2"><div class="card"><h3>الحسابات البنكية</h3><div class="table-wrap"><table class="table"><thead><tr><th>الكود</th><th>البنك</th><th>العملة</th><th>الرصيد</th><th>الرصيد EGP</th></tr></thead><tbody id="banksBody"></tbody></table></div></div><div class="card"><h3>آخر الحركات</h3><div class="table-wrap"><table class="table"><thead><tr><th>النوع</th><th>الرقم</th><th>التاريخ</th><th>الطرف</th><th>المبلغ</th></tr></thead><tbody id="cashBody"></tbody></table></div></div></div></section>
+        <section id="page-openingBalances" class="page">
+          <div class="page-toolbar"><div><h2>استيراد الأرصدة الافتتاحية</h2><p>حمّل قالب الشركة، أدخل الأرصدة، ثم راجعها قبل تحويلها إلى قيد مسودة.</p></div></div>
+          <div class="card">
+            <div class="voucher-head">
+              <div class="field"><label>الشركة</label><select id="openingCompany"></select></div>
+              <div class="field"><label>تاريخ الأرصدة</label><input id="openingDate" type="date"></div>
+              <div class="field" style="grid-column:span 2"><label>ملف Excel</label><input id="openingFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>
+            </div>
+            <div class="toolbar-actions" style="justify-content:flex-start">
+              <button id="downloadOpeningTemplateBtn" class="ghost-btn">تحميل قالب Excel</button>
+              <button id="previewOpeningBtn" class="primary-btn">استيراد ومعاينة الأرصدة</button>
+            </div>
+            <div class="api-note" style="margin-top:14px">لن يتم ترحيل أي بيانات أثناء المعاينة. بعد نجاح الفحص يمكنك نقل السطور إلى قيد افتتاحي مسودة ومراجعته قبل الترحيل.</div>
+          </div>
+          <div id="openingPreviewBlock" class="hidden" style="margin-top:18px">
+            <div id="openingSummary" class="report-summary"></div>
+            <div class="table-card"><div class="table-wrap"><table class="data-table"><thead><tr><th>صف Excel</th><th>كود الحساب</th><th>اسم الحساب</th><th>مدين</th><th>دائن</th><th>الشركة المقابلة</th><th>الحالة</th></tr></thead><tbody id="openingPreviewTbody"></tbody></table></div></div>
+            <div class="toolbar-actions" style="margin-top:14px"><button id="loadOpeningToVoucherBtn" class="primary-btn">تحميل السطور إلى قيد مسودة</button></div>
+          </div>
+        </section>
 
-<section id="page-assets" class="page"><div class="toolbar"><div><h2>الأصول الثابتة</h2><p>سجل الأصول وفئاتها والإهلاك الدوري.</p></div><div class="actions"><button id="newAssetCategory" class="btn btn-light">+ فئة أصل</button><button id="newAsset" class="btn btn-primary">+ أصل</button><button id="runDep" class="btn btn-warn">تشغيل الإهلاك</button></div></div><div class="grid2"><div class="card"><h3>فئات الأصول</h3><table class="table"><thead><tr><th>الكود</th><th>الفئة</th><th>العمر</th></tr></thead><tbody id="assetCatsBody"></tbody></table></div><div class="card"><h3>الأصول</h3><div class="table-wrap"><table class="table"><thead><tr><th>الكود</th><th>الأصل</th><th>الفئة</th><th>التكلفة</th><th>مجمع الإهلاك</th><th>الصافي</th></tr></thead><tbody id="assetsBody"></tbody></table></div></div></div></section>
+        <section id="page-trialBalance" class="page">
+          <div class="page-toolbar"><div><h2>ميزان المراجعة</h2><p>أرصدة حسابات شركة واحدة حتى تاريخ التقرير.</p></div></div>
+          <div class="filter-bar"><div class="field"><label>الشركة</label><select id="tbCompany"></select></div><div class="field small"><label>حتى تاريخ</label><input id="tbDate" type="date"></div><button id="loadTbBtn" class="primary-btn">عرض التقرير</button></div>
+          <div id="tbSummary" class="report-summary"></div>
+          <div class="table-card"><div class="table-wrap"><table class="data-table"><thead><tr><th>كود الحساب</th><th>اسم الحساب</th><th>إجمالي المدين</th><th>إجمالي الدائن</th><th>رصيد مدين</th><th>رصيد دائن</th></tr></thead><tbody id="tbTbody"></tbody></table></div></div>
+        </section>
 
-<section id="page-reports" class="page"><div class="toolbar"><div><h2>التقارير المالية</h2><p>اعرض التقرير خلال فترة، ثم اطبعه أو احفظه PDF أو افتحه في Excel.</p></div><div class="actions"><button id="exportReportExcel" class="btn btn-success">تصدير Excel</button><button id="printReport" class="btn btn-light">PDF / معاينة الطباعة</button></div></div><div class="card filters"><div class="field"><label>التقرير</label><select id="reportType"><option value="tb">ميزان مراجعة (افتتاحي / حركة / ختامي)</option><option value="ledger">دفتر أستاذ</option><option value="journal">سجل القيود خلال فترة</option><option value="income">قائمة دخل</option><option value="balance">قائمة المركز المالي وفق IFRS</option></select></div><div id="reportAccountField" class="field hidden"><label>الحساب</label><select id="reportAccount"></select></div><div id="reportStatusField" class="field hidden"><label>حالة القيود</label><select id="reportVoucherStatus"><option value="POSTED">مرحلة فقط</option><option value="DRAFT">مسودات فقط</option><option value="ALL">الجميع</option></select></div><div class="field"><label>من</label><input id="reportFrom" type="date"></div><div class="field"><label>إلى</label><input id="reportTo" type="date"></div><button id="runReport" class="btn btn-primary">عرض</button></div><div id="reportSummary" class="report-summary"></div><div id="reportPrintArea" class="card"><div id="reportPrintTitle" class="hidden"></div><div class="table-wrap"><table id="reportTable" class="table"><thead id="reportHead"></thead><tbody id="reportBody"></tbody></table></div></div></section>
+        <section id="page-consolidated" class="page">
+          <div class="page-toolbar"><div><h2>ميزان المراجعة المجمّع</h2><p>تجميع أرصدة جميع شركات المجموعة وفق دليل الحسابات الموحد.</p></div></div>
+          <div class="filter-bar"><div class="field small"><label>حتى تاريخ</label><input id="ctbDate" type="date"></div><button id="loadCtbBtn" class="primary-btn">عرض التقرير المجمّع</button></div>
+          <div class="api-note" style="margin-bottom:14px">هذا الإصدار يجمع الأرصدة كما هي. قيود الاستبعادات يجب تسجيلها في شركة من نوع <b>ELIMINATION</b> حتى تدخل ضمن صافي الرصيد المجمّع.</div>
+          <div class="table-card"><div class="table-wrap"><table id="ctbTable" class="data-table"><thead id="ctbHead"></thead><tbody id="ctbTbody"></tbody></table></div></div>
+        </section>
 
-<section id="page-consolidated" class="page"><div class="toolbar"><div><h2>ميزان المراجعة المجمع</h2><p>أرصدة الشركات بعد إدراج كيان الاستبعادات.</p></div><div class="actions"><button id="runConsolidated" class="btn btn-primary">تحديث</button><button id="printConsolidated" class="btn btn-light">معاينة الطباعة</button></div></div><div class="card table-wrap" id="consolidatedPrintArea"><table class="table"><thead id="consolidatedHead"></thead><tbody id="consolidatedBody"></tbody></table></div></section>
+        <section id="page-profile" class="page">
+          <div class="page-toolbar"><div><h2>بيانات المستخدم</h2><p>معلومات جلسة المستخدم والصلاحيات الحالية.</p></div></div>
+          <div class="grid-2"><div class="card"><div class="card-title"><h3>الحساب الحالي</h3></div><div id="profileDetails"></div></div><div class="card"><div class="card-title"><h3>معلومات فنية</h3></div><p class="hint">الخدمة تعمل من Render وقاعدة البيانات PostgreSQL على Supabase. صفحة API Documentation مخصصة للمبرمجين وليست للاستخدام المحاسبي اليومي.</p><a href="/health" target="_blank"><button class="ghost-btn">اختبار اتصال النظام</button></a></div></div>
+        </section>
+      </div>
+    </main>
+  </div>
 
-<section id="page-users" class="page"><div class="toolbar"><div><h2>المستخدمون والصلاحيات</h2><p>تعديل الدور والشركة والصلاحيات وكلمة المرور، مع حذف آمن يحتفظ بسجل التدقيق.</p></div><button id="newUser" class="btn btn-primary">+ مستخدم</button></div><div class="card table-wrap"><table id="usersTable" class="table"><thead><tr><th>الاسم</th><th>البريد</th><th>الدور</th><th>الشركة</th><th>الصلاحيات</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody id="usersBody"></tbody></table></div></section>
-<section id="page-audit" class="page"><div class="toolbar"><div><h2>سجل التدقيق</h2><p>تاريخ الإنشاء والتعديل والحذف والترحيل.</p></div><button id="reloadAudit" class="btn btn-light">تحديث</button></div><div class="card table-wrap"><table class="table"><thead><tr><th>الوقت</th><th>المستخدم</th><th>العملية</th><th>الكيان</th><th>الشركة</th><th>التفاصيل</th></tr></thead><tbody id="auditBody"></tbody></table></div></section>
-</div></main></div>
+  <div id="companyModal" class="modal-overlay"><div class="modal"><div class="modal-header"><h3>إضافة شركة</h3><button class="modal-close" data-close="companyModal">×</button></div><form id="companyForm"><div class="modal-body"><div class="form-grid">
+    <div class="field"><label>كود الشركة</label><input id="companyCode" required maxlength="30" placeholder="HOLDING"></div>
+    <div class="field"><label>اسم الشركة</label><input id="companyName" required placeholder="اسم الشركة القابضة"></div>
+    <div class="field"><label>نوع الشركة</label><select id="companyKind"><option value="HOLDING">شركة قابضة</option><option value="SUBSIDIARY">شركة تابعة</option><option value="ELIMINATION">شركة استبعادات</option></select></div>
+    <div class="field"><label>الشركة الأم</label><select id="parentCompany"><option value="">بدون شركة أم</option></select></div>
+    <div class="field"><label>نسبة الملكية %</label><input id="ownershipPercent" type="number" min="0.0001" max="100" step="0.0001" value="100"></div>
+    <div class="field"><label>العملة الوظيفية</label><input id="functionalCurrency" maxlength="3" value="EGP"></div>
+  </div></div><div class="modal-footer"><button type="submit" class="primary-btn">حفظ الشركة</button><button type="button" class="ghost-btn" data-close="companyModal">إلغاء</button></div></form></div></div>
 
-<div id="modalBg" class="modal-bg"><div class="modal"><div class="modal-head"><h3 id="modalTitle"></h3><button id="modalClose" class="close">×</button></div><form id="modalForm"><div id="modalBody" class="modal-body"></div><div class="modal-foot"><button type="submit" class="btn btn-primary">حفظ</button><button id="modalCancel" type="button" class="btn btn-light">إلغاء</button></div></form></div></div>
-<div id="toast" class="toast hidden"></div>
-<script src="/static/app.js"></script>
-</body></html>
+  <div id="groupAccountModal" class="modal-overlay"><div class="modal"><div class="modal-header"><h3>إضافة حساب إلى دليل المجموعة</h3><button class="modal-close" data-close="groupAccountModal">×</button></div><form id="groupAccountForm"><div class="modal-body"><div class="form-grid">
+    <div class="field"><label>كود الحساب</label><input id="gaCode" required placeholder="110000"></div>
+    <div class="field"><label>اسم الحساب</label><input id="gaName" required placeholder="النقدية والبنوك"></div>
+    <div class="field"><label>التصنيف</label><select id="gaClass"><option value="ASSET">أصول</option><option value="LIABILITY">التزامات</option><option value="EQUITY">حقوق ملكية</option><option value="REVENUE">إيرادات</option><option value="EXPENSE">مصروفات</option></select></div>
+    <div class="field"><label>طبيعة الرصيد</label><select id="gaNormal"><option value="DEBIT">مدين</option><option value="CREDIT">دائن</option></select></div>
+    <div class="field full"><label>الحساب الأب</label><select id="gaParent"><option value="">حساب رئيسي بدون أب</option></select></div>
+    <div class="field"><label class="check-row"><input id="gaPostable" type="checkbox" checked> قابل للقيد المباشر</label></div>
+    <div class="field"><label class="check-row"><input id="gaIntercompany" type="checkbox"> حساب معاملات متبادلة</label></div>
+    <div id="gaRoleField" class="field full hidden"><label>دور حساب Intercompany</label><select id="gaRole"><option value="DUE_FROM">مستحق من شركات المجموعة</option><option value="DUE_TO">مستحق لشركات المجموعة</option><option value="IC_REVENUE">إيرادات بين الشركات</option><option value="IC_EXPENSE">مصروفات بين الشركات</option><option value="IC_INVESTMENT">استثمارات في شركات المجموعة</option><option value="IC_LOAN_RECEIVABLE">قروض مدينة بين الشركات</option><option value="IC_LOAN_PAYABLE">قروض دائنة بين الشركات</option></select></div>
+  </div></div><div class="modal-footer"><button type="submit" class="primary-btn">حفظ الحساب</button><button type="button" class="ghost-btn" data-close="groupAccountModal">إلغاء</button></div></form></div></div>
+
+  <div id="companyAccountModal" class="modal-overlay"><div class="modal"><div class="modal-header"><h3>إضافة حساب للشركة</h3><button class="modal-close" data-close="companyAccountModal">×</button></div><form id="companyAccountForm"><div class="modal-body"><div class="form-grid">
+    <div class="field full"><label>الشركة</label><select id="caCompany"></select></div>
+    <div class="field full"><label>حساب المجموعة المرتبط</label><select id="caGroupAccount" required></select></div>
+    <div class="field"><label>الكود المحلي</label><input id="caCode" required placeholder="111001"></div>
+    <div class="field"><label>اسم الحساب المحلي</label><input id="caName" required placeholder="البنك الأهلي - حساب رئيسي"></div>
+  </div><p class="hint">كل حساب شركة يجب أن يرتبط بحساب من دليل المجموعة حتى يظهر بشكل صحيح في التقرير المجمّع.</p></div><div class="modal-footer"><button type="submit" class="primary-btn">حفظ الحساب</button><button type="button" class="ghost-btn" data-close="companyAccountModal">إلغاء</button></div></form></div></div>
+
+<script>
+(() => {
+  'use strict';
+  const state = { token: localStorage.getItem('erp_token') || '', me:null, companies:[], groupAccounts:[], accounts:[], activeCompanyId:localStorage.getItem('erp_company_id') || '', currentPage:'dashboard' };
+  const $ = id => document.getElementById(id);
+  const today = () => new Date().toISOString().slice(0,10);
+  const fmt = value => Number(value || 0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const esc = value => String(value ?? '').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  const typeName = {HOLDING:'قابضة',SUBSIDIARY:'تابعة',ELIMINATION:'استبعادات'};
+  const className = {ASSET:'أصول',LIABILITY:'التزامات',EQUITY:'حقوق الملكية',REVENUE:'إيرادات',EXPENSE:'مصروفات'};
+  const normalName = {DEBIT:'مدين',CREDIT:'دائن'};
+
+  function toast(message,type='success'){
+    const el=document.createElement('div');el.className=`toast ${type}`;el.textContent=message;$('toastContainer').appendChild(el);setTimeout(()=>el.remove(),4200);
+  }
+  function setButtonLoading(btn,loading,label){ if(loading){btn.dataset.old=btn.textContent;btn.disabled=true;btn.innerHTML='<span class="loading"></span>';}else{btn.disabled=false;btn.textContent=label||btn.dataset.old||'حفظ';} }
+  async function api(path,options={}){
+    const headers={...(options.headers||{})}; if(options.body && !headers['Content-Type']) headers['Content-Type']='application/json'; if(state.token) headers.Authorization='Bearer '+state.token;
+    const res=await fetch(path,{...options,headers}); let data=null; try{data=await res.json();}catch{data={detail:'استجابة غير مفهومة من الخادم'};}
+    if(res.status===401){ logout(false); throw new Error(data.detail||'انتهت جلسة الدخول'); }
+    if(!res.ok) throw new Error(data.detail||'حدث خطأ في العملية'); return data;
+  }
+  function logout(show=true){ localStorage.removeItem('erp_token');localStorage.removeItem('erp_company_id');state.token='';$('appShell').classList.add('hidden');$('loginScreen').classList.remove('hidden'); if(show) toast('تم تسجيل الخروج','info'); }
+
+  async function login(event){
+    event.preventDefault(); $('loginError').textContent=''; const btn=$('loginButton');setButtonLoading(btn,true);
+    try{ const data=await api('/api/auth/login',{method:'POST',body:JSON.stringify({email:$('loginEmail').value.trim(),password:$('loginPassword').value})}); state.token=data.access_token;localStorage.setItem('erp_token',state.token);await bootstrap(); }
+    catch(e){$('loginError').textContent=e.message;} finally{setButtonLoading(btn,false,'دخول إلى النظام');}
+  }
+
+  async function bootstrap(){
+    try{
+      const [me,companies,groupAccounts]=await Promise.all([api('/api/me'),api('/api/companies'),api('/api/group-accounts')]); state.me=me;state.companies=companies;state.groupAccounts=groupAccounts;
+      if(!state.activeCompanyId || !companies.some(c=>c.company_id===state.activeCompanyId)){state.activeCompanyId=companies[0]?.company_id||'';}
+      if(state.activeCompanyId)localStorage.setItem('erp_company_id',state.activeCompanyId);
+      $('loginScreen').classList.add('hidden');$('appShell').classList.remove('hidden'); renderUser();renderAllCompanySelects();renderCompanies();renderGroupAccounts();await loadCompanyAccounts();renderDashboard();resetVoucher();showPage(state.currentPage);
+    }catch(e){toast(e.message,'error'); if(!state.token)logout(false);}
+  }
+  function renderUser(){ const email=state.me?.email||'—';$('sideEmail').textContent=email;$('sideAvatar').textContent=email.slice(0,1).toUpperCase();$('profileDetails').innerHTML=`<div class="form-grid"><div class="field"><label>البريد الإلكتروني</label><div>${esc(email)}</div></div><div class="field"><label>نوع الصلاحية</label><div><span class="badge badge-green">${state.me?.is_group_admin?'مدير المجموعة':'مستخدم شركة'}</span></div></div><div class="field full"><label>معرف المجموعة</label><div class="code">${esc(state.me?.group_id)}</div></div></div>`; }
+  function companyOptions(includeEmpty=true){return `${includeEmpty?'<option value="">اختر الشركة</option>':''}`+state.companies.map(c=>`<option value="${c.company_id}">${esc(c.company_code)} — ${esc(c.company_name)}</option>`).join('');}
+  function renderAllCompanySelects(){
+    ['topCompanySelect','accountsCompanySelect','voucherCompany','openingCompany','tbCompany','caCompany'].forEach(id=>{const el=$(id);if(!el)return;el.innerHTML=companyOptions(id==='topCompanySelect');el.value=state.activeCompanyId||'';});
+    $('parentCompany').innerHTML='<option value="">بدون شركة أم</option>'+state.companies.filter(c=>c.company_kind!=='ELIMINATION').map(c=>`<option value="${c.company_id}">${esc(c.company_code)} — ${esc(c.company_name)}</option>`).join('');
+    $('gaParent').innerHTML='<option value="">حساب رئيسي بدون أب</option>'+state.groupAccounts.map(a=>`<option value="${a.group_account_id}">${esc(a.account_code)} — ${esc(a.account_name)}</option>`).join('');
+    $('caGroupAccount').innerHTML='<option value="">اختر حساب المجموعة</option>'+state.groupAccounts.filter(a=>a.is_postable).map(a=>`<option value="${a.group_account_id}">${esc(a.account_code)} — ${esc(a.account_name)}</option>`).join('');
+  }
+  async function changeActiveCompany(id){state.activeCompanyId=id||'';if(id)localStorage.setItem('erp_company_id',id);else localStorage.removeItem('erp_company_id');renderAllCompanySelects();await loadCompanyAccounts();renderDashboard();}
+  function activeCompany(){return state.companies.find(c=>c.company_id===state.activeCompanyId);}
+
+  function renderDashboard(){
+    $('statCompanies').textContent=state.companies.length;$('statGroupAccounts').textContent=state.groupAccounts.length;$('statCompanyAccounts').textContent=state.accounts.length;
+    const needs=state.companies.length===0||state.groupAccounts.length===0||(state.activeCompanyId&&state.accounts.length===0);$('onboardingBlock').classList.toggle('hidden',!needs);
+    $('stepCompany').classList.toggle('done',state.companies.length>0);$('stepGroupAccounts').classList.toggle('done',state.groupAccounts.length>0);$('stepCompanyAccounts').classList.toggle('done',state.accounts.length>0);
+    const c=activeCompany();$('activeCompanyCard').innerHTML=c?`<h3 style="margin:0 0 9px">${esc(c.company_name)}</h3><p class="hint"><span class="badge badge-blue">${typeName[c.company_kind]}</span> &nbsp; الكود: <span class="code">${esc(c.company_code)}</span></p><p class="hint">العملة الوظيفية: <b>${esc(c.functional_currency)}</b> — نسبة الملكية: <b>${fmt(c.ownership_percent)}%</b></p>`:'<p class="hint">أنشئ شركة قابضة من شاشة الشركات لبدء العمل.</p>';
+  }
+  function renderCompanies(){
+    const parentMap=Object.fromEntries(state.companies.map(c=>[c.company_id,c.company_name]));$('companiesTbody').innerHTML=state.companies.length?state.companies.map(c=>`<tr><td><span class="code">${esc(c.company_code)}</span></td><td><b>${esc(c.company_name)}</b></td><td><span class="badge ${c.company_kind==='HOLDING'?'badge-blue':c.company_kind==='ELIMINATION'?'badge-orange':'badge-gray'}">${typeName[c.company_kind]}</span></td><td>${esc(parentMap[c.parent_company_id]||'—')}</td><td class="money">${fmt(c.ownership_percent)}%</td><td>${esc(c.functional_currency)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty-cell">لا توجد شركات بعد. اضغط «شركة جديدة» لإنشاء الشركة القابضة.</td></tr>';
+  }
+  function filteredGroupAccounts(){const q=$('groupAccountSearch').value.trim().toLowerCase(),cl=$('groupAccountClassFilter').value;return state.groupAccounts.filter(a=>(!cl||a.account_class===cl)&&(!q||a.account_code.toLowerCase().includes(q)||a.account_name.toLowerCase().includes(q)));}
+  function renderGroupAccounts(){
+    const rows=filteredGroupAccounts();$('groupAccountsTbody').innerHTML=rows.length?rows.map(a=>`<tr><td><span class="code">${esc(a.account_code)}</span></td><td><b>${esc(a.account_name)}</b></td><td>${className[a.account_class]||a.account_class}</td><td>${normalName[a.normal_balance]||a.normal_balance}</td><td>${a.is_intercompany?`<span class="badge badge-orange">${esc(a.intercompany_role)}</span>`:'—'}</td><td>${a.is_postable?'<span class="badge badge-green">نعم</span>':'<span class="badge badge-gray">رئيسي</span>'}</td></tr>`).join(''):'<tr><td colspan="6" class="empty-cell">لا توجد حسابات مطابقة.</td></tr>';renderAllCompanySelects();
+  }
+  async function loadCompanyAccounts(companyId=state.activeCompanyId){
+    if(!companyId){state.accounts=[];renderCompanyAccounts();return;}try{state.accounts=await api(`/api/accounts?company_id=${encodeURIComponent(companyId)}`);renderCompanyAccounts();renderDashboard();renderVoucherAccountOptions();}catch(e){state.accounts=[];renderCompanyAccounts();toast(e.message,'error');}
+  }
+  function renderCompanyAccounts(){const q=$('companyAccountSearch').value.trim().toLowerCase();const rows=state.accounts.filter(a=>!q||a.local_account_code.toLowerCase().includes(q)||a.local_account_name.toLowerCase().includes(q));$('companyAccountsTbody').innerHTML=rows.length?rows.map(a=>`<tr><td><span class="code">${esc(a.local_account_code)}</span></td><td><b>${esc(a.local_account_name)}</b></td><td><span class="code">${esc(a.group_account_code)}</span></td><td>${esc(a.group_account_name)}</td><td>${a.is_intercompany?`<span class="badge badge-orange">${esc(a.intercompany_role)}</span>`:'—'}</td></tr>`).join(''):`<tr><td colspan="5" class="empty-cell">${state.activeCompanyId?'لا توجد حسابات لهذه الشركة بعد.':'اختر شركة أولاً.'}</td></tr>`;}
+
+  function openModal(id){$(id).classList.add('open');}function closeModal(id){$(id).classList.remove('open');}
+  async function submitCompany(e){e.preventDefault();const btn=e.submitter;setButtonLoading(btn,true);try{const kind=$('companyKind').value;await api('/api/companies',{method:'POST',body:JSON.stringify({company_code:$('companyCode').value.trim(),company_name:$('companyName').value.trim(),company_kind:kind,parent_company_id:$('parentCompany').value||null,ownership_percent:Number($('ownershipPercent').value),functional_currency:$('functionalCurrency').value.trim().toUpperCase()})});toast('تم حفظ الشركة بنجاح');closeModal('companyModal');e.target.reset();$('ownershipPercent').value='100';$('functionalCurrency').value='EGP';state.companies=await api('/api/companies');if(!state.activeCompanyId)state.activeCompanyId=state.companies[0]?.company_id||'';renderAllCompanySelects();renderCompanies();await loadCompanyAccounts();renderDashboard();}catch(err){toast(err.message,'error')}finally{setButtonLoading(btn,false,'حفظ الشركة');}}
+  async function submitGroupAccount(e){e.preventDefault();const btn=e.submitter;setButtonLoading(btn,true);try{const inter=$('gaIntercompany').checked;await api('/api/group-accounts',{method:'POST',body:JSON.stringify({account_code:$('gaCode').value.trim(),account_name:$('gaName').value.trim(),account_class:$('gaClass').value,normal_balance:$('gaNormal').value,parent_group_account_id:$('gaParent').value||null,is_postable:$('gaPostable').checked,is_intercompany:inter,intercompany_role:inter?$('gaRole').value:'NONE'})});toast('تمت إضافة حساب المجموعة');closeModal('groupAccountModal');e.target.reset();$('gaPostable').checked=true;$('gaRoleField').classList.add('hidden');state.groupAccounts=await api('/api/group-accounts');renderGroupAccounts();renderDashboard();}catch(err){toast(err.message,'error')}finally{setButtonLoading(btn,false,'حفظ الحساب');}}
+  async function submitCompanyAccount(e){e.preventDefault();const btn=e.submitter;setButtonLoading(btn,true);try{const cid=$('caCompany').value;if(!cid)throw new Error('اختر الشركة');await api('/api/accounts',{method:'POST',body:JSON.stringify({company_id:cid,group_account_id:$('caGroupAccount').value,local_account_code:$('caCode').value.trim(),local_account_name:$('caName').value.trim()})});toast('تم حفظ حساب الشركة');closeModal('companyAccountModal');e.target.reset();state.activeCompanyId=cid;renderAllCompanySelects();await loadCompanyAccounts(cid);}catch(err){toast(err.message,'error')}finally{setButtonLoading(btn,false,'حفظ الحساب');}}
+
+  function voucherAccountOptions(selected=''){return '<option value="">اختر الحساب</option>'+state.accounts.map(a=>`<option value="${a.account_id}" data-ic="${a.is_intercompany?'1':'0'}" ${selected===a.account_id?'selected':''}>${esc(a.local_account_code)} — ${esc(a.local_account_name)}</option>`).join('');}
+  function counterpartyOptions(selected=''){return '<option value="">—</option>'+state.companies.filter(c=>c.company_id!==state.activeCompanyId).map(c=>`<option value="${c.company_id}" ${selected===c.company_id?'selected':''}>${esc(c.company_code)} — ${esc(c.company_name)}</option>`).join('');}
+  function addVoucherLine(values={}){const tr=document.createElement('tr');tr.dataset.costCenterId=values.cost_center_id||'';tr.innerHTML=`<td class="line-no"></td><td><select class="line-account">${voucherAccountOptions(values.account_id)}</select></td><td><input class="line-desc" value="${esc(values.description||'')}" placeholder="بيان السطر"></td><td><input class="line-debit amount-input" type="number" min="0" step="0.01" value="${values.debit_amount||''}"></td><td><input class="line-credit amount-input" type="number" min="0" step="0.01" value="${values.credit_amount||''}"></td><td><select class="line-counterparty">${counterpartyOptions(values.counterparty_company_id)}</select></td><td><input class="line-reference" value="${esc(values.intercompany_reference||'')}" placeholder="مرجع"></td><td><button type="button" class="line-delete">×</button></td>`;$('voucherLines').appendChild(tr);bindVoucherLine(tr);renumberLines();calculateTotals();}
+  function bindVoucherLine(tr){tr.querySelectorAll('input').forEach(el=>el.addEventListener('input',calculateTotals));tr.querySelector('.line-account').addEventListener('change',()=>toggleIcFields(tr));tr.querySelector('.line-delete').addEventListener('click',()=>{if($('voucherLines').children.length>2){tr.remove();renumberLines();calculateTotals();}else toast('القيد يحتاج سطرين على الأقل','info');});toggleIcFields(tr);}
+  function toggleIcFields(tr){const sel=tr.querySelector('.line-account');const ic=sel.selectedOptions[0]?.dataset.ic==='1';const cp=tr.querySelector('.line-counterparty'),ref=tr.querySelector('.line-reference');cp.disabled=!ic;ref.disabled=!ic;if(!ic){cp.value='';ref.value='';}}
+  function renumberLines(){[...$('voucherLines').children].forEach((tr,i)=>tr.querySelector('.line-no').textContent=i+1);}
+  function calculateTotals(){let d=0,c=0;[...$('voucherLines').children].forEach(tr=>{d+=Number(tr.querySelector('.line-debit').value||0);c+=Number(tr.querySelector('.line-credit').value||0);});$('totalDebit').textContent=fmt(d);$('totalCredit').textContent=fmt(c);const ok=d>0&&Math.abs(d-c)<0.0001;$('balanceStatus').textContent=ok?'القيد متوازن':'القيد غير متوازن';$('balanceStatus').className=ok?'balance-ok':'balance-bad';return {debit:d,credit:c,ok};}
+  function renderVoucherAccountOptions(){[...$('voucherLines').children].forEach(tr=>{const sel=tr.querySelector('.line-account'),v=sel.value;sel.innerHTML=voucherAccountOptions(v);tr.querySelector('.line-counterparty').innerHTML=counterpartyOptions(tr.querySelector('.line-counterparty').value);toggleIcFields(tr);});}
+  function resetVoucher(){const d=today();$('voucherDocumentDate').value=d;$('voucherPostingDate').value=d;$('voucherDescription').value='';$('postImmediately').checked=true;$('voucherNo').value=`JV-${d.replaceAll('-','')}-${String(Date.now()).slice(-5)}`;$('voucherLines').innerHTML='';addVoucherLine();addVoucherLine();}
+  async function saveVoucher(){try{if(!$('voucherCompany').value)throw new Error('اختر الشركة');const totals=calculateTotals();if(!totals.ok)throw new Error('إجمالي المدين يجب أن يساوي إجمالي الدائن');const entries=[...$('voucherLines').children].map((tr,i)=>({account_id:tr.querySelector('.line-account').value,description:tr.querySelector('.line-desc').value.trim()||null,debit_amount:Number(tr.querySelector('.line-debit').value||0),credit_amount:Number(tr.querySelector('.line-credit').value||0),counterparty_company_id:tr.querySelector('.line-counterparty').value||null,intercompany_reference:tr.querySelector('.line-reference').value.trim()||null,cost_center_id:tr.dataset.costCenterId||null}));if(entries.some(e=>!e.account_id))throw new Error('اختر حساباً في كل سطر');if(entries.some(e=>(e.debit_amount>0)===(e.credit_amount>0)))throw new Error('كل سطر يجب أن يكون مديناً أو دائناً فقط');const btn=$('saveVoucherBtn');setButtonLoading(btn,true);const result=await api('/api/vouchers',{method:'POST',body:JSON.stringify({company_id:$('voucherCompany').value,voucher_no:$('voucherNo').value.trim(),document_date:$('voucherDocumentDate').value,posting_date:$('voucherPostingDate').value,description:$('voucherDescription').value.trim()||null,entries,post_immediately:$('postImmediately').checked})});toast(`تم حفظ القيد ${result.voucher_no} — ${result.status==='POSTED'?'مرحّل':'مسودة'}`);resetVoucher();}catch(e){toast(e.message,'error')}finally{setButtonLoading($('saveVoucherBtn'),false,'حفظ وترحيل');}}
+
+  let openingPreview=null;
+  async function downloadOpeningTemplate(){try{const cid=$('openingCompany').value;if(!cid)throw new Error('اختر الشركة أولاً');const response=await fetch(`/api/opening-balances/template?company_id=${encodeURIComponent(cid)}`,{headers:{Authorization:`Bearer ${state.token}`}});if(!response.ok){let data={};try{data=await response.json()}catch{}throw new Error(data.detail||'تعذر تحميل القالب')}const blob=await response.blob();const disposition=response.headers.get('Content-Disposition')||'';const match=disposition.match(/filename="([^"]+)"/);const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=match?.[1]||'opening-balances.xlsx';link.click();URL.revokeObjectURL(link.href);toast('تم تحميل قالب Excel');}catch(e){toast(e.message,'error')}}
+  async function previewOpeningBalances(){const btn=$('previewOpeningBtn');try{const cid=$('openingCompany').value,file=$('openingFile').files[0];if(!cid)throw new Error('اختر الشركة أولاً');if(!file)throw new Error('اختر ملف Excel');if(!file.name.toLowerCase().endsWith('.xlsx'))throw new Error('الملف يجب أن يكون بصيغة Excel xlsx');setButtonLoading(btn,true);const response=await fetch(`/api/opening-balances/preview?company_id=${encodeURIComponent(cid)}`,{method:'POST',headers:{Authorization:`Bearer ${state.token}`,'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'},body:file});let data={};try{data=await response.json()}catch{}if(!response.ok)throw new Error(data.detail||'تعذر فحص الملف');openingPreview=data;$('openingPreviewBlock').classList.remove('hidden');$('openingSummary').innerHTML=`<div class="report-chip">سطور صحيحة <b>${data.valid_rows}</b></div><div class="report-chip">سطور بها أخطاء <b>${data.invalid_rows}</b></div><div class="report-chip">إجمالي المدين <b>${fmt(data.total_debit)}</b></div><div class="report-chip">إجمالي الدائن <b>${fmt(data.total_credit)}</b></div><div class="report-chip">الفرق <b class="${data.balanced?'balance-ok':'balance-bad'}">${fmt(data.difference)}</b></div>`;$('openingPreviewTbody').innerHTML=data.rows.map(r=>`<tr><td>${r.excel_row}</td><td><span class="code">${esc(r.account_code)}</span></td><td>${esc(r.account_name||'—')}</td><td class="money">${fmt(r.debit_amount)}</td><td class="money">${fmt(r.credit_amount)}</td><td>${esc(r.counterparty_company_code||'—')}</td><td>${r.valid?'<span class="badge badge-green">صحيح</span>':`<span class="badge badge-red" title="${esc(r.errors.join(' — '))}">${esc(r.errors.join('، '))}</span>`}</td></tr>`).join('');$('loadOpeningToVoucherBtn').disabled=Boolean(data.invalid_rows)||!data.balanced;if(data.invalid_rows||!data.balanced)toast('راجع الأخطاء والفرق قبل تحميل القيد','info');else toast('تم فحص الملف والقيد متوازن');}catch(e){openingPreview=null;$('openingPreviewBlock').classList.add('hidden');toast(e.message,'error')}finally{setButtonLoading(btn,false,'استيراد ومعاينة الأرصدة')}}
+  async function loadOpeningToVoucher(){try{if(!openingPreview||openingPreview.invalid_rows||!openingPreview.balanced)throw new Error('يجب تصحيح جميع الأخطاء وموازنة الملف أولاً');const cid=$('openingCompany').value;state.activeCompanyId=cid;localStorage.setItem('erp_company_id',cid);renderAllCompanySelects();await loadCompanyAccounts(cid);resetVoucher();$('voucherCompany').value=cid;$('voucherDocumentDate').value=$('openingDate').value;$('voucherPostingDate').value=$('openingDate').value;$('voucherDescription').value=`أرصدة افتتاحية في ${$('openingDate').value}`;$('postImmediately').checked=false;$('voucherNo').value=`OB-${$('openingDate').value.replaceAll('-','')}-${String(Date.now()).slice(-5)}`;$('voucherLines').innerHTML='';openingPreview.rows.forEach(r=>addVoucherLine({account_id:r.account_id,description:r.description||'رصيد افتتاحي',debit_amount:Number(r.debit_amount)||'',credit_amount:Number(r.credit_amount)||'',counterparty_company_id:r.counterparty_company_id,intercompany_reference:r.intercompany_reference,cost_center_id:r.cost_center_id}));showPage('voucher');toast('تم تحميل الأرصدة إلى قيد مسودة؛ راجعها ثم اضغط حفظ وترحيل');}catch(e){toast(e.message,'error')}}
+
+  async function loadTrialBalance(){try{const cid=$('tbCompany').value;if(!cid)throw new Error('اختر الشركة');const rows=await api(`/api/trial-balance?company_id=${encodeURIComponent(cid)}&as_of_date=${$('tbDate').value}`);let totalD=0,totalC=0,balD=0,balC=0;$('tbTbody').innerHTML=rows.length?rows.map(r=>{const net=Number(r.net_balance);totalD+=Number(r.total_debit);totalC+=Number(r.total_credit);if(net>=0)balD+=net;else balC+=-net;return `<tr><td><span class="code">${esc(r.account_code)}</span></td><td>${esc(r.account_name)}</td><td class="money">${fmt(r.total_debit)}</td><td class="money">${fmt(r.total_credit)}</td><td class="money">${net>0?fmt(net):'0.00'}</td><td class="money">${net<0?fmt(-net):'0.00'}</td></tr>`}).join(''):'<tr><td colspan="6" class="empty-cell">لا توجد حركات مرحلة حتى هذا التاريخ.</td></tr>';$('tbSummary').innerHTML=`<div class="report-chip">إجمالي الحركات المدينة <b>${fmt(totalD)}</b></div><div class="report-chip">إجمالي الحركات الدائنة <b>${fmt(totalC)}</b></div><div class="report-chip">إجمالي الأرصدة المدينة <b>${fmt(balD)}</b></div><div class="report-chip">إجمالي الأرصدة الدائنة <b>${fmt(balC)}</b></div>`;}catch(e){toast(e.message,'error')}}
+  async function loadConsolidated(){try{const rows=await api(`/api/consolidated-trial-balance?as_of_date=${$('ctbDate').value}`);const codes=[...new Set(rows.flatMap(r=>Object.keys(r.companies||{})))].sort();$('ctbHead').innerHTML=`<tr><th>الكود</th><th>اسم الحساب</th>${codes.map(c=>`<th>${esc(c)}</th>`).join('')}<th>صافي مجمّع</th><th>رصيد مدين</th><th>رصيد دائن</th></tr>`;$('ctbTbody').innerHTML=rows.length?rows.map(r=>{const net=Number(r.consolidated_net);return `<tr><td><span class="code">${esc(r.account_code)}</span></td><td>${esc(r.account_name)}</td>${codes.map(c=>`<td class="money">${fmt(r.companies?.[c]||0)}</td>`).join('')}<td class="money"><b>${fmt(net)}</b></td><td class="money">${net>0?fmt(net):'0.00'}</td><td class="money">${net<0?fmt(-net):'0.00'}</td></tr>`}).join(''):`<tr><td colspan="${codes.length+5}" class="empty-cell">لا توجد حركات مرحلة في شركات المجموعة حتى هذا التاريخ.</td></tr>`;}catch(e){toast(e.message,'error')}}
+
+  const pageInfo={dashboard:['لوحة التحكم','نظرة عامة على النظام المالي'],companies:['الشركات','إدارة هيكل المجموعة'],groupAccounts:['دليل حسابات المجموعة','الأكواد المحاسبية الموحدة'],companyAccounts:['حسابات الشركة','الحسابات التشغيلية المحلية'],voucher:['قيد يومية جديد','إدخال وترحيل الحركات المالية'],openingBalances:['الأرصدة الافتتاحية','استيراد ملف Excel ومراجعته'],trialBalance:['ميزان المراجعة','تقرير شركة منفردة'],consolidated:['الميزان المجمّع','تقرير جميع شركات المجموعة'],profile:['بيانات المستخدم','الحساب والصلاحيات']};
+  function showPage(name){state.currentPage=name;document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===`page-${name}`));document.querySelectorAll('.nav-item[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===name));$('topTitle').textContent=pageInfo[name][0];$('topSubtitle').textContent=pageInfo[name][1];$('sidebar').classList.remove('open');if(name==='trialBalance'&&state.activeCompanyId){$('tbCompany').value=state.activeCompanyId;}if(name==='companyAccounts'&&state.activeCompanyId){$('accountsCompanySelect').value=state.activeCompanyId;}if(name==='voucher'&&state.activeCompanyId){$('voucherCompany').value=state.activeCompanyId;}}
+
+  function wire(){
+    $('loginForm').addEventListener('submit',login);$('logoutButton').addEventListener('click',()=>logout());$('menuToggle').addEventListener('click',()=>$('sidebar').classList.toggle('open'));
+    document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',()=>showPage(b.dataset.page)));document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>showPage(b.dataset.go)));
+    document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>closeModal(b.dataset.close)));document.querySelectorAll('.modal-overlay').forEach(m=>m.addEventListener('click',e=>{if(e.target===m)closeModal(m.id)}));
+    $('topCompanySelect').addEventListener('change',e=>changeActiveCompany(e.target.value));$('accountsCompanySelect').addEventListener('change',e=>changeActiveCompany(e.target.value));$('voucherCompany').addEventListener('change',e=>changeActiveCompany(e.target.value));$('openingCompany').addEventListener('change',e=>changeActiveCompany(e.target.value));
+    $('addCompanyBtn').addEventListener('click',()=>openModal('companyModal'));$('addGroupAccountBtn').addEventListener('click',()=>openModal('groupAccountModal'));$('addCompanyAccountBtn').addEventListener('click',()=>{if(!state.companies.length)return toast('أنشئ شركة أولاً','info');if(!state.groupAccounts.length)return toast('أنشئ دليل حسابات المجموعة أولاً','info');$('caCompany').value=state.activeCompanyId;openModal('companyAccountModal')});
+    $('companyForm').addEventListener('submit',submitCompany);$('groupAccountForm').addEventListener('submit',submitGroupAccount);$('companyAccountForm').addEventListener('submit',submitCompanyAccount);
+    $('companyKind').addEventListener('change',e=>{const holding=e.target.value==='HOLDING';$('parentCompany').disabled=holding;if(holding)$('parentCompany').value='';});$('gaIntercompany').addEventListener('change',e=>$('gaRoleField').classList.toggle('hidden',!e.target.checked));
+    $('groupAccountSearch').addEventListener('input',renderGroupAccounts);$('groupAccountClassFilter').addEventListener('change',renderGroupAccounts);$('companyAccountSearch').addEventListener('input',renderCompanyAccounts);
+    $('addVoucherLineBtn').addEventListener('click',()=>addVoucherLine());$('resetVoucherBtn').addEventListener('click',resetVoucher);$('saveVoucherBtn').addEventListener('click',saveVoucher);$('downloadOpeningTemplateBtn').addEventListener('click',downloadOpeningTemplate);$('previewOpeningBtn').addEventListener('click',previewOpeningBalances);$('loadOpeningToVoucherBtn').addEventListener('click',loadOpeningToVoucher);$('loadTbBtn').addEventListener('click',loadTrialBalance);$('loadCtbBtn').addEventListener('click',loadConsolidated);
+    $('tbDate').value=today();$('ctbDate').value=today();$('openingDate').value=`${new Date().getFullYear()}-01-01`;
+  }
+  wire(); if(state.token)bootstrap();
+})();
+</script>
+</body>
+</html>
