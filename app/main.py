@@ -743,7 +743,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Cairo Group Holding ERP",
-    version="0.9.1",
+    version="0.9.2",
     description="Restored bilingual multi-company ERP with user administration, IFRS-oriented statements, AR/AP and safe trial reset",
     lifespan=lifespan,
 )
@@ -772,6 +772,7 @@ class LoginRequest(BaseModel):
 class CompanyCreate(BaseModel):
     company_code: str = Field(min_length=1, max_length=30)
     company_name: str = Field(min_length=1, max_length=250)
+    company_name_en: str | None = Field(default=None, max_length=250)
     company_kind: Literal["HOLDING", "SUBSIDIARY", "ELIMINATION"]
     parent_company_id: UUID | None = None
     ownership_percent: Decimal = Field(default=Decimal("100"), gt=0, le=100)
@@ -781,7 +782,9 @@ class CompanyCreate(BaseModel):
 class CompanyUpdate(BaseModel):
     company_code: str | None = Field(default=None, min_length=1, max_length=30)
     company_name: str | None = Field(default=None, min_length=1, max_length=250)
+    company_name_en: str | None = Field(default=None, max_length=250)
     legal_name: str | None = Field(default=None, min_length=1, max_length=250)
+    legal_name_en: str | None = Field(default=None, max_length=250)
     parent_company_id: UUID | None = None
     ownership_percent: Decimal | None = Field(default=None, gt=0, le=100)
     functional_currency: str | None = Field(default=None, min_length=3, max_length=3)
@@ -790,11 +793,13 @@ class CompanyUpdate(BaseModel):
 
 class GroupProfileUpdate(BaseModel):
     group_name: str = Field(min_length=2, max_length=250)
+    group_name_en: str | None = Field(default=None, max_length=250)
 
 
 class GroupAccountCreate(BaseModel):
     account_code: str = Field(min_length=1, max_length=50)
     account_name: str = Field(min_length=1, max_length=250)
+    account_name_en: str | None = Field(default=None, max_length=250)
     account_class: Literal["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"]
     normal_balance: Literal["DEBIT", "CREDIT"]
     parent_group_account_id: UUID | None = None
@@ -806,6 +811,7 @@ class GroupAccountCreate(BaseModel):
 class GroupAccountUpdate(BaseModel):
     account_code: str | None = Field(default=None, min_length=1, max_length=50)
     account_name: str | None = Field(default=None, min_length=1, max_length=250)
+    account_name_en: str | None = Field(default=None, max_length=250)
     account_class: Literal["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"] | None = None
     normal_balance: Literal["DEBIT", "CREDIT"] | None = None
     parent_group_account_id: UUID | None = None
@@ -818,6 +824,7 @@ class CompanyAccountCreate(BaseModel):
     group_account_id: UUID
     local_account_code: str = Field(min_length=1, max_length=50)
     local_account_name: str = Field(min_length=1, max_length=250)
+    local_account_name_en: str | None = Field(default=None, max_length=250)
 
 
 class VoucherEntryCreate(BaseModel):
@@ -1092,14 +1099,14 @@ def home() -> FileResponse:
 def health() -> dict[str, str]:
     with pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok", "version": "0.9.1"}
+    return {"status": "ok", "version": "0.9.2"}
 
 
 @app.get("/api/system-info")
 def system_info() -> dict[str, Any]:
     with pool.connection() as conn:
         row = conn.execute(
-            """SELECT group_id, group_code, group_name, presentation_currency
+            """SELECT group_id, group_code, group_name, group_name_en, presentation_currency
                FROM erp.corporate_groups WHERE is_active=TRUE ORDER BY created_at LIMIT 1"""
         ).fetchone()
     return row or {"group_name": "Holding ERP", "presentation_currency": "EGP"}
@@ -1143,13 +1150,13 @@ def login(data: LoginRequest) -> dict[str, Any]:
 def me(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> dict[str, Any]:
     with pool.connection() as conn:
         group = conn.execute(
-            "SELECT group_code, group_name, presentation_currency FROM erp.corporate_groups WHERE group_id=%s",
+            "SELECT group_code, group_name, group_name_en, presentation_currency FROM erp.corporate_groups WHERE group_id=%s",
             (user["group_id"],),
         ).fetchone() or {}
     return {
         "user_id": str(user["user_id"]), "email": user["email"],
         "group_id": str(user["group_id"]),
-        "group_code": group.get("group_code"), "group_name": group.get("group_name"),
+        "group_code": group.get("group_code"), "group_name": group.get("group_name"), "group_name_en": group.get("group_name_en"),
         "presentation_currency": group.get("presentation_currency", "EGP"),
         "company_id": str(user["company_id"]) if user["company_id"] else None,
         "is_group_admin": user["is_group_admin"], "role_code": user.get("role_code"),
@@ -1195,13 +1202,13 @@ def list_companies(user: Annotated[dict[str, Any], Depends(get_current_user)]) -
     with pool.connection() as conn:
         if user["is_group_admin"]:
             return conn.execute(
-                """SELECT company_id, company_code, company_name, legal_name, company_kind,
+                """SELECT company_id, company_code, company_name, company_name_en, legal_name, legal_name_en, company_kind,
                           parent_company_id, ownership_percent, functional_currency, is_active
                    FROM erp.companies WHERE group_id=%s AND is_active=TRUE ORDER BY company_code""",
                 (user["group_id"],),
             ).fetchall()
         return conn.execute(
-            """SELECT company_id, company_code, company_name, legal_name, company_kind,
+            """SELECT company_id, company_code, company_name, company_name_en, legal_name, legal_name_en, company_kind,
                       parent_company_id, ownership_percent, functional_currency, is_active
                FROM erp.companies WHERE group_id=%s AND company_id=%s AND is_active=TRUE""",
             (user["group_id"], user["company_id"]),
@@ -1217,13 +1224,13 @@ def create_company(data: CompanyCreate, user: Annotated[dict[str, Any], Depends(
         row = conn.execute(
             """
             INSERT INTO erp.companies
-                (group_id, company_code, company_name, legal_name, company_kind,
+                (group_id, company_code, company_name, company_name_en, legal_name, legal_name_en, company_kind,
                  parent_company_id, ownership_percent, functional_currency)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
             """,
-            (user["group_id"], data.company_code, data.company_name, data.company_name,
-             data.company_kind, data.parent_company_id, data.ownership_percent,
-             data.functional_currency.upper()),
+            (user["group_id"], data.company_code, data.company_name, data.company_name_en,
+             data.company_name, data.company_name_en, data.company_kind, data.parent_company_id,
+             data.ownership_percent, data.functional_currency.upper()),
         ).fetchone()
         audit(conn, user, "CREATE", "COMPANY", row["company_id"], row["company_id"])
         conn.commit()
@@ -1235,9 +1242,9 @@ def update_group_profile(data: GroupProfileUpdate, user: Annotated[dict[str, Any
     require_group_admin(user)
     with pool.connection() as conn:
         row = conn.execute(
-            """UPDATE erp.corporate_groups SET group_name=%s
-               WHERE group_id=%s RETURNING group_id, group_code, group_name, presentation_currency""",
-            (data.group_name.strip(), user["group_id"]),
+            """UPDATE erp.corporate_groups SET group_name=%s, group_name_en=COALESCE(%s,group_name_en)
+               WHERE group_id=%s RETURNING group_id, group_code, group_name, group_name_en, presentation_currency""",
+            (data.group_name.strip(), data.group_name_en.strip() if data.group_name_en else None, user["group_id"]),
         ).fetchone()
         audit(conn, user, "UPDATE", "GROUP", user["group_id"], details={"group_name": data.group_name})
         conn.commit()
@@ -1289,19 +1296,19 @@ def list_group_accounts(user: Annotated[dict[str, Any], Depends(get_current_user
         return conn.execute(
             """
             WITH RECURSIVE tree AS (
-                SELECT ga.group_account_id, ga.account_code, ga.account_name, ga.account_class,
+                SELECT ga.group_account_id, ga.account_code, ga.account_name, ga.account_name_en, ga.account_class,
                        ga.normal_balance, ga.parent_group_account_id, ga.is_postable,
                        ga.is_intercompany, ga.intercompany_role, ga.notes,
                        0 AS account_level, ga.account_code::TEXT AS sort_path,
-                       NULL::VARCHAR AS parent_account_code, NULL::VARCHAR AS parent_account_name
+                       NULL::VARCHAR AS parent_account_code, NULL::VARCHAR AS parent_account_name, NULL::VARCHAR AS parent_account_name_en
                 FROM erp.group_accounts ga
                 WHERE ga.group_id=%s AND ga.is_active=TRUE AND ga.parent_group_account_id IS NULL
                 UNION ALL
-                SELECT child.group_account_id, child.account_code, child.account_name, child.account_class,
+                SELECT child.group_account_id, child.account_code, child.account_name, child.account_name_en, child.account_class,
                        child.normal_balance, child.parent_group_account_id, child.is_postable,
                        child.is_intercompany, child.intercompany_role, child.notes,
                        parent.account_level + 1, parent.sort_path || '.' || child.account_code,
-                       parent.account_code, parent.account_name
+                       parent.account_code, parent.account_name, parent.account_name_en
                 FROM erp.group_accounts child
                 JOIN tree parent ON parent.group_account_id=child.parent_group_account_id
                 WHERE child.group_id=%s AND child.is_active=TRUE
@@ -1345,11 +1352,11 @@ def create_group_account(data: GroupAccountCreate, user: Annotated[dict[str, Any
         row = conn.execute(
             """
             INSERT INTO erp.group_accounts
-                (group_id, account_code, account_name, account_class, normal_balance,
+                (group_id, account_code, account_name, account_name_en, account_class, normal_balance,
                  parent_group_account_id, is_postable, is_intercompany, intercompany_role)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
             """,
-            (user["group_id"], data.account_code, data.account_name, data.account_class,
+            (user["group_id"], data.account_code, data.account_name, data.account_name_en, data.account_class,
              data.normal_balance, data.parent_group_account_id, data.is_postable,
              data.is_intercompany, data.intercompany_role),
         ).fetchone()
@@ -1473,8 +1480,9 @@ def list_accounts(user: Annotated[dict[str, Any], Depends(get_current_user)], co
     with pool.connection() as conn:
         return conn.execute(
             """
-            SELECT a.account_id, a.local_account_code, a.local_account_name,
+            SELECT a.account_id, a.local_account_code, a.local_account_name, a.local_account_name_en,
                    ga.account_code AS group_account_code, ga.account_name AS group_account_name,
+                   ga.account_name_en AS group_account_name_en,
                    ga.account_class, ga.normal_balance, ga.is_intercompany, ga.intercompany_role
             FROM erp.accounts a
             JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id AND ga.group_id=a.group_id
@@ -1499,11 +1507,11 @@ def create_account(data: CompanyAccountCreate, user: Annotated[dict[str, Any], D
         row = conn.execute(
             """
             INSERT INTO erp.accounts
-                (group_id, company_id, group_account_id, local_account_code, local_account_name)
-            VALUES (%s,%s,%s,%s,%s) RETURNING *
+                (group_id, company_id, group_account_id, local_account_code, local_account_name, local_account_name_en)
+            VALUES (%s,%s,%s,%s,%s,%s) RETURNING *
             """,
             (user["group_id"], data.company_id, data.group_account_id,
-             data.local_account_code, data.local_account_name),
+             data.local_account_code, data.local_account_name, data.local_account_name_en),
         ).fetchone()
         audit(conn, user, "CREATE", "ACCOUNT", row["account_id"], data.company_id)
         conn.commit()
@@ -3069,7 +3077,7 @@ def list_users(user: Annotated[dict[str, Any], Depends(get_current_user)]) -> li
     with pool.connection() as conn:
         return conn.execute(
             """SELECT u.user_id, u.full_name, u.email, u.role_code, u.permissions, u.is_group_admin,
-                      u.company_id, c.company_name, u.is_active, u.last_login_at, u.created_at
+                      u.company_id, c.company_code, c.company_name, c.company_name_en, u.is_active, u.last_login_at, u.created_at
                FROM erp.app_users u LEFT JOIN erp.companies c ON c.company_id=u.company_id
                WHERE u.group_id=%s ORDER BY u.created_at""",
             (user["group_id"],),
@@ -3270,6 +3278,8 @@ def _sfp_snapshot(conn: Connection, group_id: UUID, company_id: UUID, as_of_date
                                              WHEN 'LIABILITY' THEN 'NONCURRENT_LIABILITY'
                                              ELSE 'EQUITY' END) AS section,
                   COALESCE(ga.ifrs_line_code,ga.account_code) AS line_code,
+                  COALESCE(ga.ifrs_line_name_ar,ga.account_name) AS line_name_ar,
+                  COALESCE(ga.ifrs_line_name_en,ga.account_name_en,ga.account_name) AS line_name_en,
                   COALESCE(ga.ifrs_line_name_ar,ga.account_name) AS line_name,
                   COALESCE(ga.ifrs_sort_order,999) AS sort_order,
                   SUM(CASE WHEN ga.account_class='ASSET'
@@ -3281,7 +3291,7 @@ def _sfp_snapshot(conn: Connection, group_id: UUID, company_id: UUID, as_of_date
            JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id AND ga.group_id=a.group_id
            WHERE e.group_id=%s AND e.company_id=%s AND v.posting_date<=%s
              AND ga.account_class IN ('ASSET','LIABILITY','EQUITY')
-           GROUP BY section,line_code,line_name,sort_order
+           GROUP BY section,line_code,line_name_ar,line_name_en,line_name,sort_order
            HAVING SUM(ABS(e.debit_amount)+ABS(e.credit_amount))<>0
            ORDER BY sort_order,line_name""",
         (group_id, company_id, as_of_date),
@@ -3301,7 +3311,7 @@ def _sfp_snapshot(conn: Connection, group_id: UUID, company_id: UUID, as_of_date
     ).fetchone()
     current_profit = money(profit_row["profit"] if profit_row else 0)
     if current_profit:
-        rows.append({"section":"EQUITY","line_code":"CURRENT_PERIOD_RESULT","line_name":"نتيجة الفترة الحالية","sort_order":590,"amount":current_profit})
+        rows.append({"section":"EQUITY","line_code":"CURRENT_PERIOD_RESULT","line_name_ar":"نتيجة الفترة الحالية","line_name_en":"Current-period result","line_name":"نتيجة الفترة الحالية","sort_order":590,"amount":current_profit})
     totals = {
         "current_assets": money(sum(Decimal(str(r["amount"])) for r in rows if r["section"] == "CURRENT_ASSET")),
         "noncurrent_assets": money(sum(Decimal(str(r["amount"])) for r in rows if r["section"] == "NONCURRENT_ASSET")),
@@ -3341,7 +3351,7 @@ def ifrs_statement_financial_position(
         item=merged.setdefault(key,{**row,"current_amount":Decimal("0"),"comparative_amount":Decimal("0")})
         item["comparative_amount"]=row["amount"]
     section_order={"CURRENT_ASSET":1,"NONCURRENT_ASSET":2,"CURRENT_LIABILITY":3,"NONCURRENT_LIABILITY":4,"EQUITY":5}
-    rows=sorted(merged.values(),key=lambda r:(section_order.get(r["section"],9),r.get("sort_order",999),r["line_name"]))
+    rows=sorted(merged.values(),key=lambda r:(section_order.get(r["section"],9),r.get("sort_order",999),r.get("line_name_en") or r.get("line_name_ar") or r["line_name"]))
     return {
         "standard": (standard_row or {}).get("financial_statement_standard","IAS1_2026"),
         "presentation_currency": (standard_row or {}).get("presentation_currency","EGP"),
