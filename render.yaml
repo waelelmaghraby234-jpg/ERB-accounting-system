@@ -24,3 +24,6 @@ services:
         value: "false"
       - key: ALLOW_TEST_UNPOST
         value: "false"
+
+      - key: ALLOW_FULL_TRIAL_RESET
+        value: "false"
