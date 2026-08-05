@@ -28,6 +28,8 @@ AUTO_MIGRATE = os.environ.get("AUTO_MIGRATE", "true").lower() == "true"
 SYNC_ADMIN_CREDENTIALS = os.environ.get("SYNC_ADMIN_CREDENTIALS", "true").lower() == "true"
 ALLOW_COMPANY_RESET = os.environ.get("ALLOW_COMPANY_RESET", "false").lower() == "true"
 ALLOW_TEST_UNPOST = os.environ.get("ALLOW_TEST_UNPOST", "false").lower() == "true"
+ALLOW_FULL_TRIAL_RESET = os.environ.get("ALLOW_FULL_TRIAL_RESET", "false").lower() == "true"
+AUTO_SEED_CAIRO_GROUP = os.environ.get("AUTO_SEED_CAIRO_GROUP", "false").lower() == "true"
 ALGORITHM = "HS256"
 MONEY = Decimal("0.0001")
 
@@ -663,11 +665,43 @@ def migrate_and_seed() -> None:
             """,
             (group_code, group_name),
         ).fetchone()
-        seed_default_chart(conn, group["group_id"])
-        seed_professional_chart(conn, group["group_id"])
-        if AUTO_MIGRATE:
-            conn.execute("SELECT erp.refresh_ifrs_account_mapping(%s)", (group["group_id"],))
-        seed_cairo_group(conn, group["group_id"])
+        # Base currencies are master data required even after a complete trial reset.
+        for code, name_ar, name_en, symbol, is_base in [
+            ("EGP", "الجنيه المصري", "Egyptian Pound", "ج.م", True),
+            ("USD", "الدولار الأمريكي", "US Dollar", "$", False),
+            ("EUR", "اليورو", "Euro", "€", False),
+            ("GBP", "الجنيه الإسترليني", "Pound Sterling", "£", False),
+            ("SAR", "الريال السعودي", "Saudi Riyal", "ر.س", False),
+            ("AED", "الدرهم الإماراتي", "UAE Dirham", "د.إ", False),
+        ]:
+            conn.execute(
+                """INSERT INTO erp.currencies
+                       (group_id,currency_code,currency_name_ar,currency_name_en,symbol,is_base,is_active)
+                   VALUES (%s,%s,%s,%s,%s,%s,TRUE)
+                   ON CONFLICT (group_id,currency_code) DO UPDATE
+                     SET currency_name_ar=EXCLUDED.currency_name_ar,
+                         currency_name_en=EXCLUDED.currency_name_en,
+                         symbol=EXCLUDED.symbol,
+                         is_base=EXCLUDED.is_base,
+                         is_active=TRUE""",
+                (group["group_id"], code, name_ar, name_en, symbol, is_base),
+            )
+        # Existing installations keep their current structure. Demo/sample companies and chart
+        # are seeded only when explicitly enabled. This allows a true blank trial reset.
+        existing_company_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM erp.companies WHERE group_id=%s",
+            (group["group_id"],),
+        ).fetchone()["n"]
+        existing_account_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM erp.group_accounts WHERE group_id=%s",
+            (group["group_id"],),
+        ).fetchone()["n"]
+        if AUTO_SEED_CAIRO_GROUP or existing_company_count or existing_account_count:
+            seed_default_chart(conn, group["group_id"])
+            seed_professional_chart(conn, group["group_id"])
+            if AUTO_MIGRATE:
+                conn.execute("SELECT erp.refresh_ifrs_account_mapping(%s)", (group["group_id"],))
+            seed_cairo_group(conn, group["group_id"])
 
         existing = conn.execute(
             "SELECT user_id FROM erp.app_users WHERE group_id=%s AND LOWER(email)=LOWER(%s)",
@@ -709,8 +743,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Cairo Group Holding ERP",
-    version="0.8.0",
-    description="Multi-company accounting with safe posted-voucher corrections, test reset controls and IFRS-oriented reports",
+    version="0.9.1",
+    description="Restored bilingual multi-company ERP with user administration, IFRS-oriented statements, AR/AP and safe trial reset",
     lifespan=lifespan,
 )
 
@@ -828,6 +862,11 @@ class CompanyResetRequest(BaseModel):
     mode: Literal["FINANCIAL_ONLY", "FULL_PRESERVE_CHART"] = "FULL_PRESERVE_CHART"
     confirmation_text: str = Field(min_length=3, max_length=100)
     reason: str = Field(min_length=5, max_length=500)
+
+
+class FullTrialResetRequest(BaseModel):
+    reason: str = Field(min_length=5, max_length=500)
+    confirmation_text: str = Field(min_length=1, max_length=100)
 
 
 class OpeningBalanceCreate(BaseModel):
@@ -1053,7 +1092,7 @@ def home() -> FileResponse:
 def health() -> dict[str, str]:
     with pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok", "version": "0.8.0"}
+    return {"status": "ok", "version": "0.9.1"}
 
 
 @app.get("/api/system-info")
@@ -1076,6 +1115,7 @@ def system_settings(user: Annotated[dict[str, Any], Depends(get_current_user)]) 
     return {
         "allow_company_reset": ALLOW_COMPANY_RESET and bool(user.get("is_group_admin")),
         "allow_test_unpost": ALLOW_TEST_UNPOST and bool(user.get("is_group_admin")),
+        "allow_full_trial_reset": ALLOW_FULL_TRIAL_RESET and bool(user.get("is_group_admin")),
         "financial_statement_standard": (row or {}).get("financial_statement_standard", "IAS1_2026"),
     }
 
@@ -2088,6 +2128,40 @@ def reset_company_data(
             ).fetchone()
             audit(conn, user, "RESET_COMPANY_DATA", "COMPANY", company_id, company_id, {"mode": data.mode, "counts": counts, "reset_id": reset_row["reset_id"]})
             return {"message": "تم تصفير بيانات الشركة مع الاحتفاظ بالشركة والمستخدمين وشجرة الحسابات", "reset": reset_row, "counts_deleted": counts}
+
+
+@app.post("/api/admin/full-trial-reset")
+def full_trial_reset(
+    data: FullTrialResetRequest,
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+) -> dict[str, Any]:
+    """Delete all ERP business data and rebuild only the group shell and admin login.
+
+    This is intentionally restricted to trial environments. The database schema remains.
+    The caller must sign in again after completion because all user rows are recreated.
+    """
+    require_group_admin(user)
+    require_permission(user, "COMPANY_RESET")
+    if not ALLOW_FULL_TRIAL_RESET:
+        raise HTTPException(
+            status_code=403,
+            detail="التصفير الكامل معطل. فعّل ALLOW_FULL_TRIAL_RESET=true في Render أثناء التجربة فقط",
+        )
+    expected = "RESET EVERYTHING"
+    if data.confirmation_text.strip() != expected:
+        raise HTTPException(status_code=422, detail=f"اكتب عبارة التأكيد كما هي: {expected}")
+
+    with pool.connection() as conn:
+        with conn.transaction():
+            conn.execute("TRUNCATE TABLE erp.corporate_groups RESTART IDENTITY CASCADE")
+
+    migrate_and_seed()
+    return {
+        "message": "تم تصفير النظام بالكامل. تم الاحتفاظ بهيكل قاعدة البيانات وإنشاء حساب مدير المجموعة فقط",
+        "force_logout": True,
+        "preserved": ["database_schema", "admin_login"],
+        "deleted": ["companies", "chart_of_accounts", "users", "journals", "opening_balances", "parties", "invoices", "banks", "assets", "audit_log"],
+    }
 
 
 @app.get("/api/opening-balances")
@@ -3285,25 +3359,130 @@ def ifrs_statement_financial_position(
 
 
 @app.get("/api/income-statement")
-def income_statement(user: Annotated[dict[str, Any], Depends(get_current_user)], company_id: UUID, date_from: date, date_to: date) -> dict[str, Any]:
+def income_statement(
+    user: Annotated[dict[str, Any], Depends(get_current_user)],
+    company_id: UUID,
+    date_from: date,
+    date_to: date,
+    comparative_from: date | None = None,
+    comparative_to: date | None = None,
+) -> dict[str, Any]:
+    """IFRS-oriented statement of profit or loss with subtotals and comparatives."""
     require_permission(user, "REPORT_VIEW")
     ensure_company_access(user, company_id)
-    with pool.connection() as conn:
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="تاريخ البداية أكبر من تاريخ النهاية")
+    comparative_from = comparative_from or _safe_prior_year_date(date_from)
+    comparative_to = comparative_to or _safe_prior_year_date(date_to)
+
+    line_names_en = {
+        "OPERATING_REVENUE": "Revenue",
+        "OTHER_INCOME": "Other income",
+        "COST_OF_SALES": "Cost of sales",
+        "OPERATING_EXPENSE": "Operating expenses",
+        "ADMIN_EXPENSE": "General and administrative expenses",
+        "DEPRECIATION_AMORTISATION": "Depreciation and amortisation",
+        "FINANCE_COST": "Finance costs",
+        "INCOME_TAX": "Income tax expense",
+    }
+    line_names_ar = {
+        "OPERATING_REVENUE": "الإيرادات",
+        "OTHER_INCOME": "إيرادات أخرى",
+        "COST_OF_SALES": "تكلفة المبيعات / الإيرادات",
+        "OPERATING_EXPENSE": "مصروفات التشغيل",
+        "ADMIN_EXPENSE": "المصروفات العمومية والإدارية",
+        "DEPRECIATION_AMORTISATION": "الإهلاك والإطفاء",
+        "FINANCE_COST": "تكاليف التمويل",
+        "INCOME_TAX": "مصروف ضريبة الدخل",
+    }
+    order = {
+        "OPERATING_REVENUE": 10, "COST_OF_SALES": 20, "OTHER_INCOME": 30,
+        "OPERATING_EXPENSE": 40, "ADMIN_EXPENSE": 50,
+        "DEPRECIATION_AMORTISATION": 60, "FINANCE_COST": 70, "INCOME_TAX": 80,
+    }
+
+    def period_rows(conn: Connection, start_date: date, end_date: date) -> dict[str, Decimal]:
         rows = conn.execute(
-            """SELECT ga.account_class, a.local_account_code AS account_code, a.local_account_name AS account_name,
-                      CASE WHEN ga.account_class='REVENUE' THEN SUM(e.credit_amount-e.debit_amount)
-                           ELSE SUM(e.debit_amount-e.credit_amount) END::NUMERIC(20,4) AS amount
-               FROM erp.journal_entries e JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id
-               JOIN erp.accounts a ON a.account_id=e.account_id
-               JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
-               WHERE e.group_id=%s AND e.company_id=%s AND v.status='POSTED'
-                 AND v.posting_date BETWEEN %s AND %s AND ga.account_class IN ('REVENUE','EXPENSE')
-               GROUP BY ga.account_class, a.account_id ORDER BY ga.account_class DESC, a.local_account_code""",
-            (user["group_id"], company_id, date_from, date_to),
+            """SELECT COALESCE(ga.ifrs_category,
+                                  CASE WHEN ga.account_class='REVENUE' THEN 'OPERATING_REVENUE'
+                                       ELSE 'OPERATING_EXPENSE' END) AS category,
+                      SUM(CASE WHEN ga.account_class='REVENUE'
+                               THEN e.credit_amount-e.debit_amount
+                               ELSE e.debit_amount-e.credit_amount END)::NUMERIC(20,4) AS amount
+               FROM erp.journal_entries e
+               JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id AND v.status='POSTED'
+               JOIN erp.accounts a ON a.account_id=e.account_id AND a.company_id=e.company_id AND a.group_id=e.group_id
+               JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id AND ga.group_id=a.group_id
+               WHERE e.group_id=%s AND e.company_id=%s AND v.posting_date BETWEEN %s AND %s
+                 AND ga.account_class IN ('REVENUE','EXPENSE')
+               GROUP BY category""",
+            (user["group_id"], company_id, start_date, end_date),
         ).fetchall()
-    revenues = sum(Decimal(str(r["amount"])) for r in rows if r["account_class"] == "REVENUE")
-    expenses = sum(Decimal(str(r["amount"])) for r in rows if r["account_class"] == "EXPENSE")
-    return {"rows": rows, "total_revenue": money(revenues), "total_expense": money(expenses), "net_profit": money(revenues-expenses)}
+        return {str(r["category"]): money(r["amount"] or 0) for r in rows}
+
+    with pool.connection() as conn:
+        current = period_rows(conn, date_from, date_to)
+        comparative = period_rows(conn, comparative_from, comparative_to)
+        standard_row = conn.execute(
+            "SELECT financial_statement_standard,presentation_currency FROM erp.corporate_groups WHERE group_id=%s",
+            (user["group_id"],),
+        ).fetchone() or {}
+
+    categories = sorted(set(current) | set(comparative), key=lambda c: (order.get(c, 999), c))
+    rows = [{
+        "category": category,
+        "line_name_ar": line_names_ar.get(category, category),
+        "line_name_en": line_names_en.get(category, category.replace("_", " ").title()),
+        "current_amount": money(current.get(category, 0)),
+        "comparative_amount": money(comparative.get(category, 0)),
+        "sort_order": order.get(category, 999),
+    } for category in categories]
+
+    revenue = current.get("OPERATING_REVENUE", Decimal("0"))
+    cost = current.get("COST_OF_SALES", Decimal("0"))
+    other_income = current.get("OTHER_INCOME", Decimal("0"))
+    operating_expenses = sum(current.get(k, Decimal("0")) for k in ("OPERATING_EXPENSE", "ADMIN_EXPENSE", "DEPRECIATION_AMORTISATION"))
+    finance_cost = current.get("FINANCE_COST", Decimal("0"))
+    tax = current.get("INCOME_TAX", Decimal("0"))
+    gross_profit = revenue - cost
+    operating_profit = gross_profit + other_income - operating_expenses
+    profit_before_tax = operating_profit - finance_cost
+    profit_for_period = profit_before_tax - tax
+
+    comp_revenue = comparative.get("OPERATING_REVENUE", Decimal("0"))
+    comp_cost = comparative.get("COST_OF_SALES", Decimal("0"))
+    comp_other = comparative.get("OTHER_INCOME", Decimal("0"))
+    comp_opex = sum(comparative.get(k, Decimal("0")) for k in ("OPERATING_EXPENSE", "ADMIN_EXPENSE", "DEPRECIATION_AMORTISATION"))
+    comp_finance = comparative.get("FINANCE_COST", Decimal("0"))
+    comp_tax = comparative.get("INCOME_TAX", Decimal("0"))
+
+    return {
+        "standard": standard_row.get("financial_statement_standard", "IAS1_2026"),
+        "presentation_currency": standard_row.get("presentation_currency", "EGP"),
+        "date_from": date_from, "date_to": date_to,
+        "comparative_from": comparative_from, "comparative_to": comparative_to,
+        "rows": rows,
+        "totals": {
+            "revenue": money(revenue), "cost_of_sales": money(cost),
+            "gross_profit": money(gross_profit), "other_income": money(other_income),
+            "operating_expenses": money(operating_expenses), "operating_profit": money(operating_profit),
+            "finance_cost": money(finance_cost), "profit_before_tax": money(profit_before_tax),
+            "income_tax": money(tax), "profit_for_period": money(profit_for_period),
+        },
+        "comparative_totals": {
+            "revenue": money(comp_revenue), "cost_of_sales": money(comp_cost),
+            "gross_profit": money(comp_revenue-comp_cost), "other_income": money(comp_other),
+            "operating_expenses": money(comp_opex), "operating_profit": money(comp_revenue-comp_cost+comp_other-comp_opex),
+            "finance_cost": money(comp_finance),
+            "profit_before_tax": money(comp_revenue-comp_cost+comp_other-comp_opex-comp_finance),
+            "income_tax": money(comp_tax),
+            "profit_for_period": money(comp_revenue-comp_cost+comp_other-comp_opex-comp_finance-comp_tax),
+        },
+        "notes": [
+            "يعتمد العرض على تصنيف IFRS المربوط بدليل حسابات المجموعة.",
+            "الامتثال الكامل يتطلب اعتماد السياسات والإفصاحات من الإدارة والمراجع الخارجي.",
+        ],
+    }
 
 
 @app.get("/api/balance-sheet")
