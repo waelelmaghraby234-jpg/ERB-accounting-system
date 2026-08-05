@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ar" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title id="documentTitle">Holding ERP</title>
@@ -9,7 +9,7 @@
 <section id="loginScreen" class="login">
  <div class="login-card">
   <div class="login-brand"><h1 id="loginGroupName">Holding ERP</h1><p>نظام حسابات سحابي متعدد الشركات لإدارة الحسابات العامة والعملاء والموردين والبنوك والأصول.</p><div class="login-features"><span>✓ دليل حسابات رئيسي وفرعي</span><span>✓ أرصدة افتتاحية وقيود مسودة</span><span>✓ عملات وأسعار صرف وإعادة تقييم</span><span>✓ صلاحيات ومعاينة طباعة</span></div></div>
-  <form id="loginForm" class="login-form"><div style="display:flex;justify-content:flex-end;margin-bottom:12px"><button id="loginLanguageToggle" type="button" class="btn btn-light btn-small">English</button></div><h2>تسجيل الدخول</h2><div class="field"><label>البريد الإلكتروني</label><input id="loginEmail" type="email" required></div><div class="field"><label>كلمة المرور</label><input id="loginPassword" type="password" required></div><button class="btn btn-primary" style="width:100%">دخول النظام</button><p id="loginError" class="danger-text"></p></form>
+  <form id="loginForm" class="login-form"><div style="display:flex;justify-content:flex-end;margin-bottom:12px"><button id="loginLanguageToggle" type="button" class="btn btn-light btn-small">العربية</button></div><h2>تسجيل الدخول</h2><div class="field"><label>البريد الإلكتروني</label><input id="loginEmail" type="email" required></div><div class="field"><label>كلمة المرور</label><input id="loginPassword" type="password" required></div><button class="btn btn-primary" style="width:100%">دخول النظام</button><p id="loginError" class="danger-text"></p></form>
  </div>
 </section>
 <div id="app" class="app hidden">
@@ -22,7 +22,7 @@
  <div class="nav-title">إدارة النظام</div><nav class="nav"><button id="systemNav" data-page="system">الإعدادات والتجارب</button></nav>
  <div class="side-footer"><b id="userEmail">—</b><small id="userRole">—</small><button id="logout" class="btn btn-light" style="width:100%;margin-top:10px">تسجيل الخروج</button></div>
 </aside>
-<main class="main"><header class="top"><div style="display:flex;gap:12px;align-items:center"><button id="menu" class="btn btn-light menu">☰</button><div><h1 id="pageTitle">لوحة التحكم</h1><p id="pageSub">نظرة عامة على المجموعة</p></div></div><div class="top-actions"><button id="languageToggle" class="btn btn-light btn-small" type="button">English</button><button id="exportPageExcel" class="btn btn-success btn-small">Excel</button><button id="printPagePdf" class="btn btn-light btn-small">PDF / طباعة</button><select id="companySelect"><option value="">اختر الشركة</option></select></div></header>
+<main class="main"><header class="top"><div style="display:flex;gap:12px;align-items:center"><button id="menu" class="btn btn-light menu">☰</button><div><h1 id="pageTitle">لوحة التحكم</h1><p id="pageSub">نظرة عامة على المجموعة</p></div></div><div class="top-actions"><button id="languageToggle" class="btn btn-light btn-small" type="button">العربية</button><button id="exportPageExcel" class="btn btn-success btn-small">Excel</button><button id="printPagePdf" class="btn btn-light btn-small">PDF / طباعة</button><select id="companySelect"><option value="">اختر الشركة</option></select></div></header>
 <div class="content">
 <section id="page-dashboard" class="page active"><div class="toolbar"><div><h2>لوحة التحكم</h2><p>مؤشرات المجموعة والشركة المختارة.</p></div></div><div class="stats"><div class="stat"><label>شركات المجموعة</label><b id="dCompanies">0</b></div><div class="stat"><label>المستخدمون</label><b id="dUsers">0</b></div><div class="stat"><label>المبيعات EGP</label><b id="dSales">0</b></div><div class="stat"><label>المشتريات EGP</label><b id="dPurchases">0</b></div></div><div id="activeCompanyInfo" class="card"></div></section>
 
