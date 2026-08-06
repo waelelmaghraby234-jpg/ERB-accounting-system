@@ -743,7 +743,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="Cairo Group Holding ERP",
-    version="0.9.2",
+    version="0.9.3",
     description="Restored bilingual multi-company ERP with user administration, IFRS-oriented statements, AR/AP and safe trial reset",
     lifespan=lifespan,
 )
@@ -1099,7 +1099,7 @@ def home() -> FileResponse:
 def health() -> dict[str, str]:
     with pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"status": "ok", "version": "0.9.2"}
+    return {"status": "ok", "version": "0.9.3"}
 
 
 @app.get("/api/system-info")
@@ -3271,6 +3271,34 @@ def _fiscal_year_start(conn: Connection, company_id: UUID, as_of_date: date) -> 
     return row["start_date"] if row else date(as_of_date.year, 1, 1)
 
 
+def _statement_entity_context(conn: Connection, group_id: UUID, company_id: UUID) -> dict[str, Any]:
+    row = conn.execute(
+        """SELECT c.company_id, c.company_code, c.company_name, c.company_name_en,
+                  c.legal_name, c.legal_name_en, c.functional_currency,
+                  g.group_name, g.group_name_en, g.presentation_currency,
+                  g.financial_statement_standard
+           FROM erp.companies c
+           JOIN erp.corporate_groups g ON g.group_id=c.group_id
+           WHERE c.group_id=%s AND c.company_id=%s""",
+        (group_id, company_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="الشركة غير موجودة")
+    return {
+        "company_id": row["company_id"],
+        "company_code": row["company_code"],
+        "company_name_ar": row["company_name"],
+        "company_name_en": row.get("company_name_en") or row["company_name"],
+        "legal_name_ar": row.get("legal_name") or row["company_name"],
+        "legal_name_en": row.get("legal_name_en") or row.get("company_name_en") or row["company_name"],
+        "group_name_ar": row["group_name"],
+        "group_name_en": row.get("group_name_en") or row["group_name"],
+        "functional_currency": row["functional_currency"],
+        "presentation_currency": row["presentation_currency"],
+        "standard": row["financial_statement_standard"],
+    }
+
+
 def _sfp_snapshot(conn: Connection, group_id: UUID, company_id: UUID, as_of_date: date) -> dict[str, Any]:
     rows = conn.execute(
         """SELECT COALESCE(ga.ifrs_category,
@@ -3281,7 +3309,8 @@ def _sfp_snapshot(conn: Connection, group_id: UUID, company_id: UUID, as_of_date
                   COALESCE(ga.ifrs_line_name_ar,ga.account_name) AS line_name_ar,
                   COALESCE(ga.ifrs_line_name_en,ga.account_name_en,ga.account_name) AS line_name_en,
                   COALESCE(ga.ifrs_line_name_ar,ga.account_name) AS line_name,
-                  COALESCE(ga.ifrs_sort_order,999) AS sort_order,
+                  MIN(NULLIF(ga.ifrs_note_no,'')) AS note_no,
+                  MIN(COALESCE(ga.ifrs_sort_order,999)) AS sort_order,
                   SUM(CASE WHEN ga.account_class='ASSET'
                            THEN e.debit_amount-e.credit_amount
                            ELSE e.credit_amount-e.debit_amount END)::NUMERIC(20,4) AS amount
@@ -3291,11 +3320,12 @@ def _sfp_snapshot(conn: Connection, group_id: UUID, company_id: UUID, as_of_date
            JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id AND ga.group_id=a.group_id
            WHERE e.group_id=%s AND e.company_id=%s AND v.posting_date<=%s
              AND ga.account_class IN ('ASSET','LIABILITY','EQUITY')
-           GROUP BY section,line_code,line_name_ar,line_name_en,line_name,sort_order
+           GROUP BY section,line_code,line_name_ar,line_name_en,line_name
            HAVING SUM(ABS(e.debit_amount)+ABS(e.credit_amount))<>0
            ORDER BY sort_order,line_name""",
         (group_id, company_id, as_of_date),
     ).fetchall()
+    rows = [dict(r) for r in rows]
     fy_start = _fiscal_year_start(conn, company_id, as_of_date)
     profit_row = conn.execute(
         """SELECT COALESCE(SUM(CASE WHEN ga.account_class='REVENUE'
@@ -3303,15 +3333,20 @@ def _sfp_snapshot(conn: Connection, group_id: UUID, company_id: UUID, as_of_date
                                     ELSE -(e.debit_amount-e.credit_amount) END),0)::NUMERIC(20,4) AS profit
            FROM erp.journal_entries e
            JOIN erp.journal_vouchers v ON v.voucher_id=e.voucher_id AND v.status='POSTED'
-           JOIN erp.accounts a ON a.account_id=e.account_id
-           JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id
+           JOIN erp.accounts a ON a.account_id=e.account_id AND a.company_id=e.company_id AND a.group_id=e.group_id
+           JOIN erp.group_accounts ga ON ga.group_account_id=a.group_account_id AND ga.group_id=a.group_id
            WHERE e.group_id=%s AND e.company_id=%s AND v.posting_date BETWEEN %s AND %s
              AND ga.account_class IN ('REVENUE','EXPENSE')""",
         (group_id, company_id, fy_start, as_of_date),
     ).fetchone()
     current_profit = money(profit_row["profit"] if profit_row else 0)
     if current_profit:
-        rows.append({"section":"EQUITY","line_code":"CURRENT_PERIOD_RESULT","line_name_ar":"نتيجة الفترة الحالية","line_name_en":"Current-period result","line_name":"نتيجة الفترة الحالية","sort_order":590,"amount":current_profit})
+        rows.append({
+            "section":"EQUITY", "line_code":"CURRENT_PERIOD_RESULT",
+            "line_name_ar":"أرباح / (خسائر) العام", "line_name_en":"Profit / (loss) for the year",
+            "line_name":"أرباح / (خسائر) العام", "note_no":None,
+            "sort_order":590, "amount":current_profit,
+        })
     totals = {
         "current_assets": money(sum(Decimal(str(r["amount"])) for r in rows if r["section"] == "CURRENT_ASSET")),
         "noncurrent_assets": money(sum(Decimal(str(r["amount"])) for r in rows if r["section"] == "NONCURRENT_ASSET")),
@@ -3333,16 +3368,14 @@ def ifrs_statement_financial_position(
     as_of_date: date,
     comparative_date: date | None = None,
 ) -> dict[str, Any]:
+    """Comparative IFRS-oriented statement of financial position."""
     require_permission(user, "REPORT_VIEW")
     ensure_company_access(user, company_id)
     comparative_date = comparative_date or _safe_prior_year_date(as_of_date)
     with pool.connection() as conn:
+        entity = _statement_entity_context(conn, user["group_id"], company_id)
         current = _sfp_snapshot(conn, user["group_id"], company_id, as_of_date)
         comparative = _sfp_snapshot(conn, user["group_id"], company_id, comparative_date)
-        standard_row = conn.execute(
-            "SELECT financial_statement_standard,presentation_currency FROM erp.corporate_groups WHERE group_id=%s",
-            (user["group_id"],),
-        ).fetchone()
     merged: dict[tuple[str,str], dict[str, Any]] = {}
     for row in current["rows"]:
         merged[(row["section"],row["line_code"])] = {**row, "current_amount": row["amount"], "comparative_amount": Decimal("0")}
@@ -3350,20 +3383,30 @@ def ifrs_statement_financial_position(
         key=(row["section"],row["line_code"])
         item=merged.setdefault(key,{**row,"current_amount":Decimal("0"),"comparative_amount":Decimal("0")})
         item["comparative_amount"]=row["amount"]
-    section_order={"CURRENT_ASSET":1,"NONCURRENT_ASSET":2,"CURRENT_LIABILITY":3,"NONCURRENT_LIABILITY":4,"EQUITY":5}
-    rows=sorted(merged.values(),key=lambda r:(section_order.get(r["section"],9),r.get("sort_order",999),r.get("line_name_en") or r.get("line_name_ar") or r["line_name"]))
+    section_order={"NONCURRENT_ASSET":1,"CURRENT_ASSET":2,"EQUITY":3,"NONCURRENT_LIABILITY":4,"CURRENT_LIABILITY":5}
+    rows=sorted(
+        merged.values(),
+        key=lambda r:(section_order.get(r["section"],9),r.get("sort_order",999),r.get("line_name_en") or r.get("line_name_ar") or r["line_name"]),
+    )
     return {
-        "standard": (standard_row or {}).get("financial_statement_standard","IAS1_2026"),
-        "presentation_currency": (standard_row or {}).get("presentation_currency","EGP"),
+        "standard": entity["standard"],
+        "presentation_currency": entity["presentation_currency"],
+        "entity": entity,
+        "statement_title_ar": "قائمة المركز المالي",
+        "statement_title_en": "Statement of financial position",
         "as_of_date": as_of_date,
         "comparative_date": comparative_date,
         "rows": rows,
         "totals": current["totals"],
         "comparative_totals": comparative["totals"],
+        "footer_note_ar": "الإيضاحات المرفقة للقوائم المالية جزء لا يتجزأ منها وتقرأ معها.",
+        "footer_note_en": "The accompanying notes form an integral part of these financial statements and should be read with them.",
+        "auditor_note_ar": "تقرير مراقب الحسابات مرفق.",
+        "auditor_note_en": "The independent auditor’s report is attached.",
         "notes": [
-            "عرض متداول/غير متداول وفق إعدادات التصنيف بالحسابات.",
-            "تم إدراج نتيجة الفترة الحالية ضمن حقوق الملكية لأغراض الاتزان قبل قيد الإقفال.",
-            "يلزم اعتماد السياسات والإفصاحات النهائية من الإدارة والمراجع الخارجي.",
+            "يعرض النظام الأصول والالتزامات على أساس متداول وغير متداول.",
+            "أدرجت نتيجة الفترة الحالية ضمن حقوق الملكية قبل قيد الإقفال.",
+            "يجب اعتماد التصنيف والسياسات والإفصاحات النهائية من الإدارة والمراجع الخارجي.",
         ],
     }
 
@@ -3377,7 +3420,7 @@ def income_statement(
     comparative_from: date | None = None,
     comparative_to: date | None = None,
 ) -> dict[str, Any]:
-    """IFRS-oriented statement of profit or loss with subtotals and comparatives."""
+    """Comparative IFRS-oriented statement of profit or loss and other comprehensive income."""
     require_permission(user, "REPORT_VIEW")
     ensure_company_access(user, company_id)
     if date_from > date_to:
@@ -3385,37 +3428,12 @@ def income_statement(
     comparative_from = comparative_from or _safe_prior_year_date(date_from)
     comparative_to = comparative_to or _safe_prior_year_date(date_to)
 
-    line_names_en = {
-        "OPERATING_REVENUE": "Revenue",
-        "OTHER_INCOME": "Other income",
-        "COST_OF_SALES": "Cost of sales",
-        "OPERATING_EXPENSE": "Operating expenses",
-        "ADMIN_EXPENSE": "General and administrative expenses",
-        "DEPRECIATION_AMORTISATION": "Depreciation and amortisation",
-        "FINANCE_COST": "Finance costs",
-        "INCOME_TAX": "Income tax expense",
-    }
-    line_names_ar = {
-        "OPERATING_REVENUE": "الإيرادات",
-        "OTHER_INCOME": "إيرادات أخرى",
-        "COST_OF_SALES": "تكلفة المبيعات / الإيرادات",
-        "OPERATING_EXPENSE": "مصروفات التشغيل",
-        "ADMIN_EXPENSE": "المصروفات العمومية والإدارية",
-        "DEPRECIATION_AMORTISATION": "الإهلاك والإطفاء",
-        "FINANCE_COST": "تكاليف التمويل",
-        "INCOME_TAX": "مصروف ضريبة الدخل",
-    }
-    order = {
-        "OPERATING_REVENUE": 10, "COST_OF_SALES": 20, "OTHER_INCOME": 30,
-        "OPERATING_EXPENSE": 40, "ADMIN_EXPENSE": 50,
-        "DEPRECIATION_AMORTISATION": 60, "FINANCE_COST": 70, "INCOME_TAX": 80,
-    }
-
-    def period_rows(conn: Connection, start_date: date, end_date: date) -> dict[str, Decimal]:
+    def period_rows(conn: Connection, start_date: date, end_date: date) -> tuple[dict[str, Decimal], dict[str, str | None]]:
         rows = conn.execute(
             """SELECT COALESCE(ga.ifrs_category,
                                   CASE WHEN ga.account_class='REVENUE' THEN 'OPERATING_REVENUE'
                                        ELSE 'OPERATING_EXPENSE' END) AS category,
+                      MIN(NULLIF(ga.ifrs_note_no,'')) AS note_no,
                       SUM(CASE WHEN ga.account_class='REVENUE'
                                THEN e.credit_amount-e.debit_amount
                                ELSE e.debit_amount-e.credit_amount END)::NUMERIC(20,4) AS amount
@@ -3428,69 +3446,106 @@ def income_statement(
                GROUP BY category""",
             (user["group_id"], company_id, start_date, end_date),
         ).fetchall()
-        return {str(r["category"]): money(r["amount"] or 0) for r in rows}
+        amounts = {str(r["category"]): money(r["amount"] or 0) for r in rows}
+        notes = {str(r["category"]): r.get("note_no") for r in rows}
+        return amounts, notes
 
     with pool.connection() as conn:
-        current = period_rows(conn, date_from, date_to)
-        comparative = period_rows(conn, comparative_from, comparative_to)
-        standard_row = conn.execute(
-            "SELECT financial_statement_standard,presentation_currency FROM erp.corporate_groups WHERE group_id=%s",
-            (user["group_id"],),
-        ).fetchone() or {}
+        entity = _statement_entity_context(conn, user["group_id"], company_id)
+        current, current_notes = period_rows(conn, date_from, date_to)
+        comparative, comparative_notes = period_rows(conn, comparative_from, comparative_to)
 
-    categories = sorted(set(current) | set(comparative), key=lambda c: (order.get(c, 999), c))
-    rows = [{
-        "category": category,
-        "line_name_ar": line_names_ar.get(category, category),
-        "line_name_en": line_names_en.get(category, category.replace("_", " ").title()),
-        "current_amount": money(current.get(category, 0)),
-        "comparative_amount": money(comparative.get(category, 0)),
-        "sort_order": order.get(category, 999),
-    } for category in categories]
+    def n(category: str, fallback: str | None = None) -> str | None:
+        return current_notes.get(category) or comparative_notes.get(category) or fallback
 
-    revenue = current.get("OPERATING_REVENUE", Decimal("0"))
-    cost = current.get("COST_OF_SALES", Decimal("0"))
-    other_income = current.get("OTHER_INCOME", Decimal("0"))
-    operating_expenses = sum(current.get(k, Decimal("0")) for k in ("OPERATING_EXPENSE", "ADMIN_EXPENSE", "DEPRECIATION_AMORTISATION"))
-    finance_cost = current.get("FINANCE_COST", Decimal("0"))
-    tax = current.get("INCOME_TAX", Decimal("0"))
-    gross_profit = revenue - cost
-    operating_profit = gross_profit + other_income - operating_expenses
-    profit_before_tax = operating_profit - finance_cost
-    profit_for_period = profit_before_tax - tax
+    def c(category: str) -> Decimal:
+        return current.get(category, Decimal("0"))
 
-    comp_revenue = comparative.get("OPERATING_REVENUE", Decimal("0"))
-    comp_cost = comparative.get("COST_OF_SALES", Decimal("0"))
-    comp_other = comparative.get("OTHER_INCOME", Decimal("0"))
-    comp_opex = sum(comparative.get(k, Decimal("0")) for k in ("OPERATING_EXPENSE", "ADMIN_EXPENSE", "DEPRECIATION_AMORTISATION"))
-    comp_finance = comparative.get("FINANCE_COST", Decimal("0"))
-    comp_tax = comparative.get("INCOME_TAX", Decimal("0"))
+    def p(category: str) -> Decimal:
+        return comparative.get(category, Decimal("0"))
+
+    revenue, comp_revenue = c("OPERATING_REVENUE"), p("OPERATING_REVENUE")
+    cost, comp_cost = c("COST_OF_SALES"), p("COST_OF_SALES")
+    op_exp, comp_op_exp = c("OPERATING_EXPENSE"), p("OPERATING_EXPENSE")
+    admin, comp_admin = c("ADMIN_EXPENSE"), p("ADMIN_EXPENSE")
+    depreciation, comp_depreciation = c("DEPRECIATION_AMORTISATION"), p("DEPRECIATION_AMORTISATION")
+    finance_income, comp_finance_income = c("FINANCE_INCOME"), p("FINANCE_INCOME")
+    other_income, comp_other_income = c("OTHER_INCOME"), p("OTHER_INCOME")
+    finance_cost, comp_finance_cost = c("FINANCE_COST"), p("FINANCE_COST")
+    tax, comp_tax = c("INCOME_TAX"), p("INCOME_TAX")
+    oci_income = c("OTHER_COMPREHENSIVE_INCOME") - c("OTHER_COMPREHENSIVE_EXPENSE")
+    comp_oci_income = p("OTHER_COMPREHENSIVE_INCOME") - p("OTHER_COMPREHENSIVE_EXPENSE")
+
+    gross_profit, comp_gross_profit = revenue-cost, comp_revenue-comp_cost
+    total_operating_expenses = op_exp+admin+depreciation
+    comp_total_operating_expenses = comp_op_exp+comp_admin+comp_depreciation
+    operating_profit = gross_profit-total_operating_expenses
+    comp_operating_profit = comp_gross_profit-comp_total_operating_expenses
+    net_other = finance_income+other_income-finance_cost
+    comp_net_other = comp_finance_income+comp_other_income-comp_finance_cost
+    profit_before_tax = operating_profit+net_other
+    comp_profit_before_tax = comp_operating_profit+comp_net_other
+    profit_for_period = profit_before_tax-tax
+    comp_profit_for_period = comp_profit_before_tax-comp_tax
+    comprehensive_income = profit_for_period+oci_income
+    comp_comprehensive_income = comp_profit_for_period+comp_oci_income
+
+    lines = [
+        {"key":"OPERATING_REVENUE","label_ar":"إيرادات النشاط","label_en":"Revenue","note_no":n("OPERATING_REVENUE","12"),"current_amount":money(revenue),"comparative_amount":money(comp_revenue),"style":"line"},
+        {"key":"TOTAL_REVENUE","label_ar":"إجمالي الإيرادات","label_en":"Total revenue","note_no":None,"current_amount":money(revenue),"comparative_amount":money(comp_revenue),"style":"subtotal"},
+        {"key":"COST_OF_SALES","label_ar":"تكلفة النشاط / الإيرادات","label_en":"Cost of activity / revenue","note_no":n("COST_OF_SALES","13"),"current_amount":money(-cost),"comparative_amount":money(-comp_cost),"style":"line"},
+        {"key":"TOTAL_COST","label_ar":"إجمالي التكاليف","label_en":"Total cost","note_no":None,"current_amount":money(-cost),"comparative_amount":money(-comp_cost),"style":"subtotal"},
+        {"key":"GROSS_PROFIT","label_ar":"مجمل الربح / (الخسارة)","label_en":"Gross profit / (loss)","note_no":None,"current_amount":money(gross_profit),"comparative_amount":money(comp_gross_profit),"style":"major_total"},
+        {"key":"OPERATING_EXPENSE","label_ar":"مصروفات تشغيلية","label_en":"Operating expenses","note_no":n("OPERATING_EXPENSE","13"),"current_amount":money(-op_exp),"comparative_amount":money(-comp_op_exp),"style":"line"},
+        {"key":"ADMIN_EXPENSE","label_ar":"مصروفات إدارية وعمومية","label_en":"General and administrative expenses","note_no":n("ADMIN_EXPENSE","13"),"current_amount":money(-admin),"comparative_amount":money(-comp_admin),"style":"line"},
+        {"key":"DEPRECIATION_AMORTISATION","label_ar":"إهلاك وإطفاء الأصول","label_en":"Depreciation and amortisation","note_no":n("DEPRECIATION_AMORTISATION","14"),"current_amount":money(-depreciation),"comparative_amount":money(-comp_depreciation),"style":"line"},
+        {"key":"TOTAL_OPERATING_EXPENSES","label_ar":"إجمالي المصروفات التشغيلية والإدارية","label_en":"Total operating and administrative expenses","note_no":None,"current_amount":money(-total_operating_expenses),"comparative_amount":money(-comp_total_operating_expenses),"style":"subtotal"},
+        {"key":"OPERATING_PROFIT","label_ar":"ربح / (خسارة) النشاط","label_en":"Operating profit / (loss)","note_no":None,"current_amount":money(operating_profit),"comparative_amount":money(comp_operating_profit),"style":"major_total"},
+        {"key":"OTHER_SECTION","label_ar":"إيرادات و (مصروفات) أخرى","label_en":"Other income and (expenses)","note_no":None,"current_amount":None,"comparative_amount":None,"style":"section"},
+        {"key":"FINANCE_INCOME","label_ar":"إيرادات تمويلية","label_en":"Finance income","note_no":n("FINANCE_INCOME","15"),"current_amount":money(finance_income),"comparative_amount":money(comp_finance_income),"style":"line"},
+        {"key":"OTHER_INCOME","label_ar":"إيرادات أخرى","label_en":"Other income","note_no":n("OTHER_INCOME","15"),"current_amount":money(other_income),"comparative_amount":money(comp_other_income),"style":"line"},
+        {"key":"FINANCE_COST","label_ar":"تكاليف التمويل","label_en":"Finance costs","note_no":n("FINANCE_COST","15"),"current_amount":money(-finance_cost),"comparative_amount":money(-comp_finance_cost),"style":"line"},
+        {"key":"TOTAL_OTHER","label_ar":"إجمالي الإيرادات و (المصروفات) الأخرى","label_en":"Total other income and (expenses)","note_no":None,"current_amount":money(net_other),"comparative_amount":money(comp_net_other),"style":"subtotal"},
+        {"key":"PROFIT_BEFORE_TAX","label_ar":"صافي ربح / (خسارة) العام قبل الضريبة على الدخل","label_en":"Profit / (loss) before income tax","note_no":None,"current_amount":money(profit_before_tax),"comparative_amount":money(comp_profit_before_tax),"style":"major_total"},
+        {"key":"INCOME_TAX","label_ar":"مصروف ضريبة الدخل","label_en":"Income tax expense","note_no":n("INCOME_TAX","16"),"current_amount":money(-tax),"comparative_amount":money(-comp_tax),"style":"line"},
+        {"key":"PROFIT_FOR_PERIOD","label_ar":"صافي ربح / (خسارة) العام","label_en":"Profit / (loss) for the year","note_no":None,"current_amount":money(profit_for_period),"comparative_amount":money(comp_profit_for_period),"style":"grand_total"},
+        {"key":"OCI_SECTION","label_ar":"الدخل الشامل الآخر","label_en":"Other comprehensive income","note_no":None,"current_amount":None,"comparative_amount":None,"style":"section"},
+        {"key":"OCI","label_ar":"بنود الدخل الشامل الآخر","label_en":"Items of other comprehensive income","note_no":None,"current_amount":money(oci_income),"comparative_amount":money(comp_oci_income),"style":"line"},
+        {"key":"TOTAL_COMPREHENSIVE_INCOME","label_ar":"إجمالي الدخل الشامل للعام","label_en":"Total comprehensive income for the year","note_no":None,"current_amount":money(comprehensive_income),"comparative_amount":money(comp_comprehensive_income),"style":"grand_total"},
+    ]
 
     return {
-        "standard": standard_row.get("financial_statement_standard", "IAS1_2026"),
-        "presentation_currency": standard_row.get("presentation_currency", "EGP"),
+        "standard": entity["standard"],
+        "presentation_currency": entity["presentation_currency"],
+        "entity": entity,
+        "statement_title_ar": "قائمة الأرباح أو الخسائر والدخل الشامل الآخر",
+        "statement_title_en": "Statement of profit or loss and other comprehensive income",
         "date_from": date_from, "date_to": date_to,
         "comparative_from": comparative_from, "comparative_to": comparative_to,
-        "rows": rows,
+        "lines": lines,
         "totals": {
             "revenue": money(revenue), "cost_of_sales": money(cost),
-            "gross_profit": money(gross_profit), "other_income": money(other_income),
-            "operating_expenses": money(operating_expenses), "operating_profit": money(operating_profit),
-            "finance_cost": money(finance_cost), "profit_before_tax": money(profit_before_tax),
-            "income_tax": money(tax), "profit_for_period": money(profit_for_period),
+            "gross_profit": money(gross_profit), "operating_expenses": money(total_operating_expenses),
+            "operating_profit": money(operating_profit), "net_other_income_expenses": money(net_other),
+            "profit_before_tax": money(profit_before_tax), "income_tax": money(tax),
+            "profit_for_period": money(profit_for_period), "other_comprehensive_income": money(oci_income),
+            "total_comprehensive_income": money(comprehensive_income),
         },
         "comparative_totals": {
             "revenue": money(comp_revenue), "cost_of_sales": money(comp_cost),
-            "gross_profit": money(comp_revenue-comp_cost), "other_income": money(comp_other),
-            "operating_expenses": money(comp_opex), "operating_profit": money(comp_revenue-comp_cost+comp_other-comp_opex),
-            "finance_cost": money(comp_finance),
-            "profit_before_tax": money(comp_revenue-comp_cost+comp_other-comp_opex-comp_finance),
-            "income_tax": money(comp_tax),
-            "profit_for_period": money(comp_revenue-comp_cost+comp_other-comp_opex-comp_finance-comp_tax),
+            "gross_profit": money(comp_gross_profit), "operating_expenses": money(comp_total_operating_expenses),
+            "operating_profit": money(comp_operating_profit), "net_other_income_expenses": money(comp_net_other),
+            "profit_before_tax": money(comp_profit_before_tax), "income_tax": money(comp_tax),
+            "profit_for_period": money(comp_profit_for_period), "other_comprehensive_income": money(comp_oci_income),
+            "total_comprehensive_income": money(comp_comprehensive_income),
         },
+        "footer_note_ar": "الإيضاحات المرفقة للقوائم المالية جزء لا يتجزأ منها وتقرأ معها.",
+        "footer_note_en": "The accompanying notes form an integral part of these financial statements and should be read with them.",
+        "auditor_note_ar": "تقرير مراقب الحسابات مرفق.",
+        "auditor_note_en": "The independent auditor’s report is attached.",
         "notes": [
-            "يعتمد العرض على تصنيف IFRS المربوط بدليل حسابات المجموعة.",
-            "الامتثال الكامل يتطلب اعتماد السياسات والإفصاحات من الإدارة والمراجع الخارجي.",
+            "العرض مبني على تصنيف حسابات المجموعة وربطها ببنود القوائم المالية.",
+            "يجب مراجعة السياسات المحاسبية والإفصاحات من الإدارة والمراجع الخارجي قبل الإصدار القانوني.",
         ],
     }
 
