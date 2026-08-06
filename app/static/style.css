@@ -18,3 +18,29 @@ body.ltr{direction:ltr;text-align:left}
 body.ltr .side,body.ltr .modal,body.ltr .field,body.ltr .table th,body.ltr .table td{text-align:left}
 .statement-section td{background:#eaf1f7;font-size:1.03rem;border-top:2px solid #74879a}
 .statement-total td{font-weight:700;border-top:1.5px solid #253b50;border-bottom:1.5px solid #253b50;background:#f8fafc}
+
+/* Detailed statutory financial statements — comparative IFRS-style presentation. */
+.fs-sheet{max-width:920px;margin:0 auto;background:#fff;color:#111;padding:28px 38px;direction:rtl}
+body.ltr .fs-sheet{direction:ltr}
+.fs-header{text-align:center;margin-bottom:26px}
+.fs-entity,.fs-legal{font-weight:800;line-height:1.45}
+.fs-entity{font-size:17px}.fs-legal{font-size:14px}
+.fs-title{font-size:18px;font-weight:900;text-decoration:underline;margin-top:4px}
+.fs-period-title{font-size:14px;font-weight:700;margin-top:3px}
+.fs-table{width:100%;border-collapse:collapse;font-size:13px}
+.fs-table th,.fs-table td{border:0;padding:6px 8px;background:#fff}
+.fs-table thead th{border-bottom:1px solid #222;vertical-align:bottom;color:#111;background:#fff}
+.fs-description{width:45%;text-align:right;white-space:normal!important}
+body.ltr .fs-description{text-align:left}
+.fs-note-col{width:10%;text-align:center;white-space:nowrap}
+.fs-amount-head,.fs-amount{width:22.5%;text-align:center!important;font-family:Consolas,'Courier New',monospace;white-space:nowrap}
+.fs-amount-head small{display:block;text-decoration:underline;font-family:inherit;font-weight:700;margin-top:3px}
+.fs-section-row td{font-weight:900;text-decoration:underline;padding-top:15px}
+.fs-subtotal-row td{font-weight:800;border-top:1px solid #222;border-bottom:1px solid #222}
+.fs-major-total-row td{font-weight:900;border-bottom:1px solid #222}
+.fs-grand-total-row td{font-weight:900;border-top:2px solid #111;border-bottom:3px double #111}
+.fs-footer{margin-top:20px;font-size:12px}
+.fs-footer p{text-align:center;margin:5px 0}
+.fs-signatures{display:grid;grid-template-columns:1fr 1fr;gap:80px;margin-top:38px;text-align:center}
+.fs-signatures span{display:block;border-bottom:1px solid #222;height:35px;margin:0 auto;width:70%}
+@media(max-width:800px){.fs-sheet{padding:18px 12px}.fs-table{font-size:11px}.fs-table th,.fs-table td{padding:5px 3px}.fs-signatures{gap:20px}}
